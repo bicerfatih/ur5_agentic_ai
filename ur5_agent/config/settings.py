@@ -1,0 +1,80 @@
+# config/settings.py — global defaults (override via env or CLI)
+
+import os
+
+# ── Robot network ──────────────────────────────────────
+ROBOT_HOST = os.environ.get("ROBOT_HOST", "192.168.0.160")
+YOUR_HOST = os.environ.get("YOUR_HOST", "192.168.0.85")
+
+# ── Runtime (CLI can override) ───────────────────────────
+ROBOT_TYPE = os.environ.get("ROBOT_TYPE", "ur5")
+SITE_ID = os.environ.get("SITE_ID", "lab")
+DRY_RUN = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
+
+# ── Safety limits (hard ceiling; site profile may be stricter) ──
+MAX_JOINT_SPEED = 0.5
+MAX_JOINT_ACCEL = 0.5
+MAX_LINEAR_SPEED = 0.2
+MAX_LINEAR_ACCEL = 0.2
+MAX_SINGLE_MOVE_DOWN = 0.10
+
+# ── Safe home position (joint angles in radians) ───────
+HOME_JOINTS = [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0]
+
+# ── LLM backend: ollama (default) | claude ─────────────
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
+
+# ── Ollama (local, offline-capable) ────────────────────
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "1024"))
+
+# ── Claude (optional) ──────────────────────────────────
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+CLAUDE_MAX_TOKENS = int(os.environ.get("CLAUDE_MAX_TOKENS", "1024"))
+
+# ── Gripper ────────────────────────────────────────────
+# Robotiq URCap: PolyScope gripper ID 1 → socket SID 9 (port 63352)
+GRIPPER_TYPE = os.environ.get("GRIPPER_TYPE", "robotiq")  # robotiq | dual_pin | digital_io | none
+GRIPPER_POLYSCOPE_ID = int(os.environ.get("GRIPPER_POLYSCOPE_ID", os.environ.get("GRIPPER_ID", "1")))
+ROBOTIQ_SOCKET_PORT = int(os.environ.get("ROBOTIQ_SOCKET_PORT", "63352"))
+ROBOTIQ_SOCKET_SID = int(
+    os.environ.get("ROBOTIQ_SOCKET_SID", str(8 + GRIPPER_POLYSCOPE_ID))
+)  # ID 1 → 9
+ROBOTIQ_OPEN_POS = int(os.environ.get("ROBOTIQ_OPEN_POS", "0"))
+ROBOTIQ_CLOSE_POS = int(os.environ.get("ROBOTIQ_CLOSE_POS", "229"))  # 2F-85 typical max ~229
+ROBOTIQ_SPEED = int(os.environ.get("ROBOTIQ_SPEED", "255"))
+ROBOTIQ_FORCE = int(os.environ.get("ROBOTIQ_FORCE", "255"))
+
+# Legacy pneumatic I/O (not used when GRIPPER_TYPE=robotiq):
+# Pins 2 & 3 = feedback inputs only. Standard DO 0/1 = commands if using dual_pin.
+GRIPPER_CMD_TARGET = os.environ.get(
+    "GRIPPER_CMD_TARGET", os.environ.get("GRIPPER_IO_TARGET", "standard")
+)
+GRIPPER_CMD_PIN = int(os.environ.get("GRIPPER_CMD_PIN", os.environ.get("GRIPPER_PIN", "0")))
+GRIPPER_CMD_OPEN_PIN = int(os.environ.get("GRIPPER_CMD_OPEN_PIN", os.environ.get("GRIPPER_OPEN_PIN", "0")))
+GRIPPER_CMD_CLOSE_PIN = int(os.environ.get("GRIPPER_CMD_CLOSE_PIN", os.environ.get("GRIPPER_CLOSE_PIN", "1")))
+GRIPPER_OPEN_HIGH = os.environ.get("GRIPPER_OPEN_HIGH", "true").lower() in ("1", "true", "yes")
+GRIPPER_ACTIVE_LOW = os.environ.get("GRIPPER_ACTIVE_LOW", "false").lower() in ("1", "true", "yes")
+# Pneumatic solenoids often need a short pulse (ms); 0 = hold DO on continuously
+GRIPPER_PULSE_MS = int(os.environ.get("GRIPPER_PULSE_MS", "0"))
+GRIPPER_PULSE_RELEASE = os.environ.get("GRIPPER_PULSE_RELEASE", "true").lower() in ("1", "true", "yes")
+# Prefer URScript on the controller (works with External Control program running)
+GRIPPER_USE_URSCRIPT = os.environ.get("GRIPPER_USE_URSCRIPT", "true").lower() in ("1", "true", "yes")
+
+# FEEDBACK (digital inputs 2 & 3 — read only, from pendant I/O Tools):
+GRIPPER_FEEDBACK_IN_OPEN = int(os.environ.get("GRIPPER_FEEDBACK_IN_OPEN", "2"))
+GRIPPER_FEEDBACK_IN_CLOSED = int(os.environ.get("GRIPPER_FEEDBACK_IN_CLOSED", "3"))
+
+# ── UR PolyScope programs (.urp on robot) ───────────────
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "29999"))
+_default_programs = "fly2.urp,fly2"
+ALLOWED_URP_PROGRAMS = [
+    p.strip()
+    for p in os.environ.get("ALLOWED_URP_PROGRAMS", _default_programs).split(",")
+    if p.strip()
+]
+URP_PLAY_WAIT_SEC = float(os.environ.get("URP_PLAY_WAIT_SEC", "0.5"))
+
+# ── Logging ────────────────────────────────────────────
+LOG_FILE = os.environ.get("LOG_FILE", "logs/session.log")

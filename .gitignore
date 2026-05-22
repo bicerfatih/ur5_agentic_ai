@@ -1,0 +1,25 @@
+# Python
+ur5_agent/robot_env/
+__pycache__/
+*.pyc
+.env
+
+# Logs
+ur5_agent/logs/
+
+# Data (large files — keep structure via .gitkeep)
+data/raw/images/**/*
+!data/raw/images/**/.gitkeep
+data/raw/video/**/*
+!data/raw/video/**/.gitkeep
+data/raw/robot_sessions/**/*
+!data/raw/robot_sessions/**/.gitkeep
+!data/raw/robot_sessions/.gitkeep
+data/synthetic/**/*
+!data/synthetic/**/.gitkeep
+data/labels/**/*
+!data/labels/**/.gitkeep
+data/datasets/**/*
+!data/datasets/**/.gitkeep
+data/models/**/*
+!data/models/**/.gitkeep
