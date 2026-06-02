@@ -7,9 +7,16 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.programs import is_program_allowed
-from config.settings import ALLOWED_URP_PROGRAMS, MAX_SINGLE_MOVE_DOWN
+from config.settings import ALLOWED_URP_PROGRAMS, CAMERA_TYPE, MAX_SINGLE_MOVE_DOWN
 from policy.safety import PolicyEngine
 from robot.base import RobotDriver
+
+if CAMERA_TYPE == "realsense":
+    from camera import RealSenseCamera
+else:
+    RealSenseCamera = None
+
+_camera = None
 
 
 def get_robot_state(robot: RobotDriver, policy: PolicyEngine) -> dict:
@@ -186,6 +193,23 @@ def stop_urp_program(robot: RobotDriver) -> dict:
     return robot.stop_urp_program()
 
 
+def get_camera_frame(robot: RobotDriver, session_id: str = "lab", prefix: str = "frame") -> dict:
+    del robot  # camera can be used even if robot motion is blocked
+    if CAMERA_TYPE == "none":
+        return {"status": "error", "reason": "Camera disabled (CAMERA_TYPE=none)."}
+    if RealSenseCamera is None:
+        return {"status": "error", "reason": "RealSense camera module unavailable."}
+
+    global _camera
+    if _camera is None:
+        _camera = RealSenseCamera()
+    print("  [TOOL] get_camera_frame")
+    try:
+        return _camera.save_color_frame(session_id=session_id, prefix=prefix)
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
+
+
 def execute_tool(
     name: str,
     inputs: dict,
@@ -224,6 +248,7 @@ def execute_tool(
         "stop_urp_program": lambda: stop_urp_program(robot),
         "release_rtde_control": lambda: release_rtde_control(robot),
         "reconnect_rtde_control": lambda: reconnect_rtde_control(robot),
+        "get_camera_frame": lambda: get_camera_frame(robot, **inputs),
     }
     fn = dispatch.get(name)
     if fn is None:
@@ -377,5 +402,17 @@ TOOL_SCHEMAS = [
         "name": "stop_urp_program",
         "description": "Stop the currently running PolyScope program.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_camera_frame",
+        "description": "Capture and save one RGB frame from Intel RealSense camera.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Session tag in saved filename"},
+                "prefix": {"type": "string", "description": "Filename prefix"},
+            },
+            "required": [],
+        },
     },
 ]

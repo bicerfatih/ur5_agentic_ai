@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Robot Ops Console</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <header class="topbar">
+    <div>
+      <h1>Robot Ops Console</h1>
+      <p id="subtitle">Agentic Physical AI Mission Control</p>
+    </div>
+    <div class="status-cluster">
+      <span class="pill" id="site-pill">site: -</span>
+      <span class="pill" id="arm-pill">arm: -</span>
+      <span class="pill" id="mode-pill">mode: -</span>
+      <span class="pill" id="safety-pill">safety: -</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="panel twin">
+      <h2>Digital Twin</h2>
+      <canvas id="twin-canvas"></canvas>
+      <div class="small">Live joint-driven 3D skeleton (v1).</div>
+    </section>
+
+    <section class="panel controls">
+      <h2>Tool Console</h2>
+      <div class="buttons">
+        <button data-tool="get_robot_state">Get State</button>
+        <button data-tool="move_home">Home</button>
+        <button data-tool="open_gripper">Open Gripper</button>
+        <button data-tool="close_gripper">Close Gripper</button>
+        <button data-tool="get_camera_frame">Capture Frame</button>
+      </div>
+      <div class="row">
+        <input id="tool-name" placeholder="custom tool name (e.g. move_up)" />
+      </div>
+      <div class="row">
+        <textarea id="tool-inputs" rows="4" placeholder='{"distance_m":0.03}'></textarea>
+      </div>
+      <button id="run-custom">Run Custom Tool</button>
+      <pre id="tool-result" class="log"></pre>
+    </section>
+
+    <section class="panel goal">
+      <h2>Agentic AI</h2>
+      <div class="row">
+        <textarea id="goal-input" rows="3" placeholder="e.g. read state then move up 2 centimeters"></textarea>
+      </div>
+      <button id="run-goal">Run</button>
+      <div id="goal-status" class="small">No goal submitted.</div>
+    </section>
+
+    <section class="panel telemetry">
+      <h2>Robot Telemetry</h2>
+      <pre id="telemetry" class="log"></pre>
+    </section>
+
+    <section class="panel camera">
+      <h2>Camera View</h2>
+      <div class="row">
+        <button id="capture-and-refresh">Capture + Refresh Preview</button>
+        <button id="live-feed-toggle">Start Live Feed</button>
+        <button id="detect-toggle">Detect OFF</button>
+      </div>
+      <img id="camera-preview" alt="Latest capture preview" />
+      <div id="camera-hint" class="small">No capture yet.</div>
+      <div id="detected-labels" class="detected-summary">Detected: —</div>
+    </section>
+
+    <section class="panel events">
+      <h2>Agent Events</h2>
+      <div id="events" class="events-list"></div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/three@0.163.0/build/three.min.js"></script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

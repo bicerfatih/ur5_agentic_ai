@@ -100,6 +100,7 @@ def main():
     print("  → read state then move up 2 centimeters")
     print("  → go to home position")
     print("  → open the gripper")
+    print("  → capture a camera frame")
     print("  → run program fly2.urp\n")
 
     try:

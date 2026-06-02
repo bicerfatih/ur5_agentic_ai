@@ -35,6 +35,7 @@ Safety rules (always):
 Gripper & PolyScope programs:
 - Gripper is Robotiq URCap (PolyScope ID 1, socket SID 9, port 63352) — use open_gripper / close_gripper
 - Do not use digital I/O for gripper unless GRIPPER_TYPE is dual_pin
+- For vision, use get_camera_frame to capture an RGB image and return the saved path
 - run_urp_program to load and play a teach pendant program (whitelist only)
 - Allowed .urp programs: {ALLOWED_URP_PROGRAMS}
 - run_urp_program releases RTDE then load+play; if play fails, tell user to enable Remote Control and press PLAY on pendant

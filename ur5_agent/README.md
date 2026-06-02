@@ -5,11 +5,13 @@ Natural-language control of a robot arm with Claude, built for **lab validation 
 See [VISION.md](../VISION.md) for the long-term scope.  
 Training plan: [docs/TRAINING.md](../docs/TRAINING.md) · Data folders: [data/README.md](../data/README.md)  
 Gripper (Robotiq ID 1): [docs/ROBOTIQ_GRIPPER.md](../docs/ROBOTIQ_GRIPPER.md) · `.urp`: [docs/GRIPPER_PROGRAMS.md](../docs/GRIPPER_PROGRAMS.md)
+Camera (Intel RealSense): [docs/CAMERA_REALSENSE.md](../docs/CAMERA_REALSENSE.md)
 
 ## Hardware (lab)
 
 - UR5 / UR5e — RTDE at `192.168.0.160` (edit in `config/settings.py` or `--host`)
 - Control machine (e.g. Jetson) — `192.168.0.85`
+- Intel RealSense (D455/F455) color stream
 
 ## Project structure
 
@@ -53,6 +55,14 @@ python3 main.py --dry-run --site lab
 python3 scripts/preflight.py
 python3 main.py --robot ur5 --site lab
 
+# Camera quick test
+python3 scripts/test_camera.py
+
+# Futuristic Robot Ops Console UI
+export UI_DRY_RUN=1   # remove for live robot
+python3 scripts/run_ops_console.py
+# open http://localhost:8787
+
 # Optional Claude backend
 export ANTHROPIC_API_KEY="your-key"
 python3 main.py --llm claude --robot ur5 --site lab
@@ -81,6 +91,7 @@ Environment overrides: `LLM_BACKEND`, `OLLAMA_MODEL`, `OLLAMA_HOST`, `ROBOT_TYPE
 - `go to home position`
 - `move forward 8cm` (may be blocked into smaller steps at `airport_ground`)
 - `what is the TCP force right now?`
+- `capture a camera frame for this session`
 
 REPL shortcuts: `state`, `quit`.
 

@@ -78,3 +78,16 @@ URP_PLAY_WAIT_SEC = float(os.environ.get("URP_PLAY_WAIT_SEC", "0.5"))
 
 # ── Logging ────────────────────────────────────────────
 LOG_FILE = os.environ.get("LOG_FILE", "logs/session.log")
+
+# ── Camera (Intel RealSense) ───────────────────────────
+CAMERA_TYPE = os.environ.get("CAMERA_TYPE", "realsense")  # realsense | none
+CAMERA_SERIAL = os.environ.get("CAMERA_SERIAL", "").strip()
+CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
+CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
+CAMERA_FPS = int(os.environ.get("CAMERA_FPS", "30"))
+CAMERA_OUTPUT_DIR = os.environ.get("CAMERA_OUTPUT_DIR", "../data/raw/images/lab")
+
+# ── Vision (YOLO) ───────────────────────────────────────
+YOLO_ENABLED = os.environ.get("YOLO_ENABLED", "true").lower() in ("1", "true", "yes")
+YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "").strip()
+YOLO_CONF = float(os.environ.get("YOLO_CONF", "0.35"))
