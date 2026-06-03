@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Robot Ops Console</title>
-  <link rel="stylesheet" href="/assets/styles.css" />
+  <link rel="stylesheet" href="/assets/styles.css?v=2" />
 </head>
 <body>
   <div class="bg-grid"></div>
@@ -24,8 +24,12 @@
   <main class="grid">
     <section class="panel twin">
       <h2>Digital Twin</h2>
-      <canvas id="twin-canvas"></canvas>
-      <div class="small">Live joint-driven 3D skeleton (v1).</div>
+      <div class="twin-viewport">
+        <canvas id="twin-canvas-2d" class="hidden" aria-label="UR5 2D schematic"></canvas>
+        <canvas id="twin-canvas" aria-label="UR5 digital twin 3D view"></canvas>
+      </div>
+      <div id="twin-hud" class="twin-hud">Loading twin…</div>
+      <div class="small">3D when Three.js loads; otherwise 2D stick figure. Drag/zoom (3D); double-click reframe.</div>
     </section>
 
     <section class="panel controls">
@@ -36,6 +40,7 @@
         <button data-tool="open_gripper">Open Gripper</button>
         <button data-tool="close_gripper">Close Gripper</button>
         <button data-tool="get_camera_frame">Capture Frame</button>
+        <button data-tool="detect_objects">Detect Objects</button>
       </div>
       <div class="row">
         <input id="tool-name" placeholder="custom tool name (e.g. move_up)" />
@@ -50,7 +55,7 @@
     <section class="panel goal">
       <h2>Agentic AI</h2>
       <div class="row">
-        <textarea id="goal-input" rows="3" placeholder="e.g. read state then move up 2 centimeters"></textarea>
+        <textarea id="goal-input" rows="3" placeholder="e.g. read state, then move down 2 centimeters (use Agentic AI — not tool buttons)"></textarea>
       </div>
       <button id="run-goal">Run</button>
       <div id="goal-status" class="small">No goal submitted.</div>
@@ -79,7 +84,8 @@
     </section>
   </main>
 
-  <script src="https://unpkg.com/three@0.163.0/build/three.min.js"></script>
-  <script src="/assets/app.js"></script>
+  <script src="/assets/vendor/three.min.js"></script>
+  <script src="/assets/twin.js?v=12"></script>
+  <script src="/assets/app.js?v=4"></script>
 </body>
 </html>

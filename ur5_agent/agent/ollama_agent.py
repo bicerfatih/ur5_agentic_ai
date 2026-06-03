@@ -14,7 +14,9 @@ from robot.base import RobotDriver
 OLLAMA_AGENT_HINT = (
     "You control a real robot via tools. "
     "Use get_robot_state before any motion. "
-    "You may call multiple tools across turns until the task is done."
+    "You may call multiple tools across turns until the task is done. "
+    "If the user repeats a move request, execute the motion tool again every time. "
+    "After two failed motion tools, stop and report — do not keep trying smaller moves."
 )
 
 
@@ -67,11 +69,11 @@ class OllamaRobotAgent(BaseRobotAgent):
             out.append({"name": fn.name, "arguments": args})
         return out
 
-    def _append_tool_round(self, messages: list, tool_calls: list) -> list:
+    def _append_tool_round(self, messages: list, tool_calls: list) -> tuple[list, str | None]:
         for call in tool_calls:
             self._log(f"TOOL: {call['name']} {call['arguments']}")
 
-        results = self._execute_tools(self.robot, self.policy, tool_calls)
+        results, note = self._execute_tools(self.robot, self.policy, tool_calls)
 
         new_messages = list(messages)
         if self._last_message is not None:
@@ -86,7 +88,7 @@ class OllamaRobotAgent(BaseRobotAgent):
             )
             self._log(f"RESULT: {res['result']}")
 
-        return new_messages
+        return new_messages, note
 
 
 def _model_available(listed: list[str], model: str) -> bool:

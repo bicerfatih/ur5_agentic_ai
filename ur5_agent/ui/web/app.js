@@ -15,6 +15,8 @@ const liveFeedToggle = $("live-feed-toggle");
 const detectToggle = $("detect-toggle");
 
 let latestJoints = [0, -1.57, 0, -1.57, 0, 0];
+let lastTelemetryState = null;
+let digitalTwin = null;
 let liveFeedTimer = null;
 let detectEnabled = false;
 let livePreviewObjectUrl = null;
@@ -67,8 +69,29 @@ function renderDetectionLabels(det = {}) {
   detectedLabelsEl.textContent = `Detected (${count}): ${names}`;
 }
 
+function normalizeRobotState(st) {
+  const out = { ...(st || {}) };
+  if (!Array.isArray(out.joint_positions_rad) && Array.isArray(out.joint_positions_deg)) {
+    out.joint_positions_rad = out.joint_positions_deg.map((d) => (Number(d) * Math.PI) / 180);
+  }
+  if (Array.isArray(out.joint_positions_rad)) {
+    out.joint_positions_rad = out.joint_positions_rad.map((v) => Number(v));
+    const maxAbs = Math.max(...out.joint_positions_rad.map((v) => Math.abs(v)));
+    if (maxAbs > 6.5) {
+      out.joint_positions_rad = out.joint_positions_rad.map((d) => (d * Math.PI) / 180);
+    }
+  }
+  return out;
+}
+
 function renderState(payload) {
-  const st = payload.state || {};
+  const st = normalizeRobotState(payload.state);
+  lastTelemetryState = st;
+  if (st.error && !st.joint_positions_rad) {
+    if (digitalTwin && $("twin-hud")) {
+      $("twin-hud").textContent = `Robot read error: ${st.error}`;
+    }
+  }
   if (Array.isArray(st.joint_positions_rad)) {
     latestJoints = st.joint_positions_rad;
   }
@@ -79,7 +102,11 @@ function renderState(payload) {
   modePill.style.borderColor = st.robot_mode === 7 ? "rgba(34,197,94,.6)" : "rgba(245,158,11,.7)";
   safetyPill.style.borderColor = st.safety_mode === 1 ? "rgba(34,197,94,.6)" : "rgba(245,158,11,.7)";
   stateEl.textContent = JSON.stringify(st, null, 2);
-  renderTwin(latestJoints);
+  if (digitalTwin) {
+    digitalTwin.updateFromState(st);
+  } else if ($("twin-hud")) {
+    $("twin-hud").textContent = "Telemetry OK — starting 3D twin…";
+  }
   if (payload.camera_path) {
     cameraHint.textContent = payload.camera_path;
   }
@@ -88,11 +115,12 @@ function renderState(payload) {
   }
   const gs = payload.goal_status || {};
   if (gs.running) {
-    goalStatusEl.textContent = `Running: ${gs.goal || ""}`;
+    goalStatusEl.textContent = `Running: ${gs.goal || ""} (check terminal for live tool output)`;
   } else if (gs.error) {
     goalStatusEl.textContent = `Error: ${gs.error}`;
   } else if (gs.ended_at) {
-    goalStatusEl.textContent = `Finished goal: ${gs.goal || ""}`;
+    const note = gs.note ? ` — ${gs.note}` : "";
+    goalStatusEl.textContent = `Finished: ${gs.goal || ""}${note}`;
   }
 }
 
@@ -215,74 +243,184 @@ $("run-goal").addEventListener("click", async () => {
   goalStatusEl.textContent = `Accepted: ${goal}`;
 });
 
-async function init() {
-  const cfg = await (await fetch("/api/config")).json();
-  sitePill.textContent = `site: ${cfg.site}`;
+async function pullTelemetry(site) {
+  try {
+    const res = await fetch("/api/state");
+    if (!res.ok) return;
+    const data = await res.json();
+    renderState({
+      site,
+      state: data.state || {},
+      events: data.events || [],
+      goal_status: data.goal_status,
+      detection: data.detection,
+    });
+    renderEvents(data.events || []);
+  } catch {
+    if ($("twin-hud")) {
+      $("twin-hud").textContent = "Cannot reach /api/state — is the console running?";
+    }
+  }
+}
 
+let telemetryPollTimer = null;
+let telemetryWs = null;
+
+function connectTelemetryWs(site) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws/telemetry`);
+  telemetryWs = ws;
+
+  ws.onopen = () => {
+    if (digitalTwin?.ready && lastTelemetryState) {
+      digitalTwin.updateFromState(lastTelemetryState);
+    }
+  };
   ws.onmessage = (ev) => {
     const payload = JSON.parse(ev.data);
-    payload.site = cfg.site;
+    payload.site = site;
     renderState(payload);
     renderEvents(payload.events || []);
   };
-  ws.onclose = () => { stateEl.textContent = "Telemetry socket disconnected."; };
+  ws.onclose = () => {
+    if (telemetryWs !== ws) return;
+    if ($("twin-hud")) {
+      $("twin-hud").textContent = "Live telemetry: HTTP (1s) — reconnecting WebSocket…";
+    }
+    setTimeout(() => connectTelemetryWs(site), 2500);
+  };
+  ws.onerror = () => {
+    if ($("twin-hud")) {
+      $("twin-hud").textContent = "Live telemetry: HTTP (1s) — WebSocket retry…";
+    }
+  };
 }
 
-// --- lightweight three.js twin ---
-let scene, camera, renderer, armGroup, links = [];
-function initTwin() {
+async function init() {
+  ensureTwin();
+  const cfg = await (await fetch("/api/config")).json();
+  const site = cfg.site;
+  sitePill.textContent = `site: ${site}`;
+
+  await pullTelemetry(site);
+  if (telemetryPollTimer) clearInterval(telemetryPollTimer);
+  telemetryPollTimer = setInterval(() => pullTelemetry(site), 1000);
+
+  connectTelemetryWs(site);
+}
+
+function loadThreeJs(timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    if (typeof THREE !== "undefined") {
+      resolve(true);
+      return;
+    }
+    const deadline = Date.now() + timeoutMs;
+    const tick = () => {
+      if (typeof THREE !== "undefined") {
+        resolve(true);
+        return;
+      }
+      if (Date.now() > deadline) {
+        resolve(false);
+        return;
+      }
+      setTimeout(tick, 80);
+    };
+    tick();
+  });
+}
+
+function waitForTwinReady(twin, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    if (twin?.ready) {
+      resolve(twin);
+      return;
+    }
+    const deadline = Date.now() + timeoutMs;
+    const tick = () => {
+      if (twin?.ready) {
+        resolve(twin);
+        return;
+      }
+      if (Date.now() > deadline) {
+        resolve(twin);
+        return;
+      }
+      setTimeout(tick, 50);
+    };
+    tick();
+  });
+}
+
+function ensureTwin() {
+  if (digitalTwin?.ready && digitalTwin.mode === "3d") return true;
+  if (digitalTwin && !digitalTwin.ready) return true;
+  if (digitalTwin) return false;
   const canvas = $("twin-canvas");
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
-
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x04070f);
-  camera = new THREE.PerspectiveCamera(45, canvas.clientWidth / canvas.clientHeight, 0.01, 20);
-  camera.position.set(1.2, 1.2, 1.2);
-  camera.lookAt(0, 0.2, 0);
-
-  const light = new THREE.PointLight(0x66e5ff, 2.5, 10);
-  light.position.set(1.8, 1.8, 1.8);
-  scene.add(light, new THREE.AmbientLight(0x305070, 1.0));
-
-  const grid = new THREE.GridHelper(2, 20, 0x1e3554, 0x132033);
-  scene.add(grid);
-
-  armGroup = new THREE.Group();
-  scene.add(armGroup);
-  const mat = new THREE.MeshStandardMaterial({ color: 0x22d3ee, metalness: 0.4, roughness: 0.3 });
-  const lengths = [0.25, 0.30, 0.24, 0.18, 0.12, 0.08];
-  let parent = armGroup;
-  for (let i = 0; i < lengths.length; i++) {
-    const joint = new THREE.Group();
-    const link = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, lengths[i], 16), mat);
-    link.position.y = lengths[i] / 2;
-    joint.add(link);
-    parent.add(joint);
-    parent = joint;
-    parent.position.y = lengths[i];
-    links.push(joint);
+  const canvas2d = $("twin-canvas-2d");
+  const hud = $("twin-hud");
+  if (!canvas) return false;
+  if (!window.UR5DigitalTwin) {
+    if (hud) hud.textContent = "twin.js failed to load. Hard refresh (Ctrl+Shift+R).";
+    return false;
   }
-  animate();
-}
-
-function renderTwin(q) {
-  if (!links.length) return;
-  for (let i = 0; i < Math.min(6, q.length); i++) {
-    const j = links[i];
-    if (i === 0) j.rotation.y = q[i] || 0;
-    else j.rotation.z = q[i] || 0;
+  if (typeof THREE === "undefined") {
+    if (hud) {
+      hud.textContent = "Three.js missing — restart Ops Console (server downloads it on startup).";
+    }
+    return false;
   }
+  digitalTwin = new window.UR5DigitalTwin(canvas, canvas2d, hud, { prefer3d: true });
+  return true;
 }
 
-function animate() {
-  requestAnimationFrame(animate);
-  if (armGroup) armGroup.rotation.y += 0.002;
-  renderer?.render(scene, camera);
+async function bootTwin() {
+  const hud = $("twin-hud");
+  let cfg = {};
+  try {
+    cfg = await (await fetch("/api/config")).json();
+  } catch {
+    /* ignore */
+  }
+  if (!cfg.three_js?.ready && hud) {
+    hud.textContent = `3D library not on server: ${cfg.three_js?.message || "unknown"}. Run: python3 scripts/fetch_threejs.py`;
+  } else if (hud) {
+    hud.textContent = "Loading Three.js…";
+  }
+
+  const threeOk = await loadThreeJs();
+  if (!threeOk) {
+    if (hud) {
+      hud.textContent = "Three.js did not load. Check GET /assets/vendor/three.min.js in browser (should be ~650KB).";
+    }
+    return false;
+  }
+
+  if (!digitalTwin) ensureTwin();
+  await waitForTwinReady(digitalTwin, 6000);
+  if (digitalTwin?.ready && digitalTwin.mode === "3d") {
+    if (lastTelemetryState) {
+      digitalTwin.updateFromState(lastTelemetryState);
+    } else {
+      digitalTwin.updateFromState({
+        joint_positions_rad: latestJoints,
+        tcp_pose: [0.4, -0.25, 0.55, 0, 0, 0],
+      });
+    }
+    return true;
+  }
+  return false;
 }
 
-initTwin();
-init();
+async function boot() {
+  await bootTwin();
+  requestAnimationFrame(() => bootTwin());
+  await init();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", boot);
+} else {
+  boot();
+}

@@ -47,11 +47,11 @@ class ClaudeRobotAgent(BaseRobotAgent):
         is_final = response.stop_reason == "end_turn"
         return text, tool_calls, is_final
 
-    def _append_tool_round(self, messages: list, tool_calls: list) -> list:
+    def _append_tool_round(self, messages: list, tool_calls: list) -> tuple[list, str | None]:
         for call in tool_calls:
             self._log(f"TOOL: {call['name']} {call['arguments']}")
 
-        results = self._execute_tools(self.robot, self.policy, tool_calls)
+        results, note = self._execute_tools(self.robot, self.policy, tool_calls)
 
         tool_results = []
         tool_blocks = [b for b in self._pending_assistant_blocks if b.type == "tool_use"]
@@ -65,7 +65,11 @@ class ClaudeRobotAgent(BaseRobotAgent):
                 }
             )
 
-        return messages + [
-            {"role": "assistant", "content": self._pending_assistant_blocks},
-            {"role": "user", "content": tool_results},
-        ]
+        return (
+            messages
+            + [
+                {"role": "assistant", "content": self._pending_assistant_blocks},
+                {"role": "user", "content": tool_results},
+            ],
+            note,
+        )

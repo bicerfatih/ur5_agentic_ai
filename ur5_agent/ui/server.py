@@ -4,6 +4,7 @@
 import asyncio
 import datetime as dt
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -12,23 +13,39 @@ from typing import Any
 import cv2
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.websockets import WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from config.sites import get_site
-from config.settings import (
-    CAMERA_OUTPUT_DIR,
-    CAMERA_TYPE,
-    YOLO_CONF,
-    YOLO_ENABLED,
-    YOLO_MODEL_PATH,
-)
+from config.settings import CAMERA_OUTPUT_DIR, CAMERA_TYPE
 from agent.factory import create_agent
 from policy.safety import PolicyEngine
 from robot.factory import create_robot
 from robot.tools import TOOL_SCHEMAS, execute_tool
-from camera import RealSenseCamera
+from camera import ObjectDetector, RealSenseCamera
+
+_UI_ROOT = Path(__file__).resolve().parent
+if str(_UI_ROOT) not in sys.path:
+    sys.path.insert(0, str(_UI_ROOT))
+from vendor_three import ensure_three_vendor, three_vendor_path
+
+
+def _json_safe(value: Any) -> Any:
+    """Ensure telemetry payloads are JSON-serializable (numpy scalars, etc.)."""
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, "item") and callable(value.item):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if isinstance(value, (int, float, str, bool)) or value is None:
+        return value
+    return str(value)
 
 
 class ToolCall(BaseModel):
@@ -65,9 +82,10 @@ class RobotSession:
         }
         self.live_camera = None
         self.camera_lock = threading.Lock()
-        self.yolo_model = None
-        self.yolo_model_name = None
+        self.detector = ObjectDetector()
         self.last_detection: dict[str, Any] = {"count": 0, "labels": []}
+        self.last_good_state: dict[str, Any] | None = None
+        self.last_state_error: str | None = None
 
     def connect(self):
         if not self.connected:
@@ -85,10 +103,39 @@ class RobotSession:
             self.live_camera = None
 
     def state(self) -> dict[str, Any]:
-        return self.robot.get_full_state()
+        try:
+            st = self.robot.get_full_state()
+            self.last_good_state = st
+            self.last_state_error = None
+            return st
+        except Exception as e:
+            self.last_state_error = str(e)
+            if self.last_good_state is not None:
+                cached = dict(self.last_good_state)
+                cached["telemetry_stale"] = True
+                cached["read_error"] = str(e)
+                return cached
+            raise
+
+    def telemetry_payload(self) -> dict[str, Any]:
+        """State for WebSocket / UI; never raises."""
+        try:
+            state = self.state()
+        except Exception as e:
+            state = {
+                "error": str(e),
+                "arm_model": getattr(self.robot, "arm_model", "ur5"),
+                "simulated": getattr(self.robot, "is_simulated", False),
+            }
+        return _json_safe({
+            "ts": time.time(),
+            "state": state,
+            "events": self.last_tool_events,
+            "goal_status": self.goal_status,
+            "detection": self.last_detection,
+        })
 
     def run_tool(self, name: str, inputs: dict[str, Any]) -> dict[str, Any]:
-        self.policy.begin_goal()
         start = time.time()
         if name == "get_camera_frame":
             result = self.capture_and_save_frame(
@@ -137,7 +184,9 @@ class RobotSession:
                 with self.goal_lock:
                     self._ensure_agent()
                     self.agent.run(goal)
+                note = getattr(self.agent, "last_run_note", None)
                 self.goal_status["result"] = "done"
+                self.goal_status["note"] = note
             except Exception as e:
                 self.goal_status["error"] = str(e)
             finally:
@@ -159,75 +208,6 @@ class RobotSession:
             raise RuntimeError("Failed to encode camera frame.")
         return encoded.tobytes()
 
-    @staticmethod
-    def _draw_detection_boxes_fallback(frame):
-        """Simple CV boxes fallback when YOLO model is unavailable."""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 60, 140)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        boxes = []
-        h, w = frame.shape[:2]
-        min_area = max(1200, int(0.002 * w * h))
-        for c in contours:
-            x, y, bw, bh = cv2.boundingRect(c)
-            area = bw * bh
-            if area < min_area:
-                continue
-            boxes.append((x, y, bw, bh))
-        boxes = sorted(boxes, key=lambda b: b[2] * b[3], reverse=True)[:8]
-
-        for x, y, bw, bh in boxes:
-            cv2.rectangle(frame, (x, y), (x + bw, y + bh), (110, 220, 255), 1)
-        labels = [f"obj_{i}" for i in range(1, len(boxes) + 1)]
-        return frame, {"detector": "contour_fallback", "boxes": len(boxes), "labels": labels}
-
-    def _ensure_yolo(self):
-        if not YOLO_ENABLED:
-            return None
-        if self.yolo_model is not None:
-            return self.yolo_model
-        try:
-            from ultralytics import YOLO
-        except Exception:
-            return None
-
-        model_path = YOLO_MODEL_PATH or "yolov8n.pt"
-        try:
-            self.yolo_model = YOLO(model_path)
-            self.yolo_model_name = model_path
-            return self.yolo_model
-        except Exception:
-            self.yolo_model = None
-            self.yolo_model_name = None
-            return None
-
-    def _draw_detection_boxes_yolo(self, frame):
-        model = self._ensure_yolo()
-        if model is None:
-            return self._draw_detection_boxes_fallback(frame)
-
-        try:
-            results = model.predict(source=frame, conf=YOLO_CONF, verbose=False)
-        except Exception:
-            return self._draw_detection_boxes_fallback(frame)
-
-        det_count = 0
-        labels = []
-        names = results[0].names if results and hasattr(results[0], "names") else {}
-        boxes = results[0].boxes if results else None
-        if boxes is not None:
-            for b in boxes:
-                xyxy = b.xyxy[0].tolist()
-                x1, y1, x2, y2 = [int(v) for v in xyxy]
-                cls_id = int(b.cls[0]) if b.cls is not None else -1
-                label = names.get(cls_id, f"id_{cls_id}") if isinstance(names, dict) else f"id_{cls_id}"
-                labels.append(str(label))
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (110, 220, 255), 1)
-                det_count += 1
-
-        return frame, {"detector": "yolo", "boxes": det_count, "labels": labels, "model": self.yolo_model_name}
-
     def live_jpeg_with_detection(self) -> bytes:
         if CAMERA_TYPE == "none":
             raise RuntimeError("Camera disabled (CAMERA_TYPE=none)")
@@ -235,15 +215,8 @@ class RobotSession:
             if self.live_camera is None:
                 self.live_camera = RealSenseCamera()
             frame = self.live_camera.capture_color_frame()
-        frame, meta = self._draw_detection_boxes_yolo(frame)
-        raw_labels = list(meta.get("labels", []))
-        unique_labels = list(dict.fromkeys(raw_labels))
-        self.last_detection = {
-            "count": int(meta.get("boxes", 0)),
-            "labels": raw_labels,
-            "unique_labels": unique_labels,
-            "detector": meta.get("detector", "unknown"),
-        }
+        frame, meta = self.detector.detect_and_draw(frame)
+        self.last_detection = ObjectDetector.to_summary(meta)
         ok, encoded = cv2.imencode(".jpg", frame)
         if not ok:
             raise RuntimeError("Failed to encode detection frame.")
@@ -285,10 +258,15 @@ app.add_middleware(
 session = RobotSession()
 web_root = Path(__file__).resolve().parent / "web"
 app.mount("/assets", StaticFiles(directory=str(web_root)), name="assets")
+_three_vendor_ok, _three_vendor_msg = ensure_three_vendor(web_root)
 
 
 @app.on_event("startup")
 def _startup():
+    global _three_vendor_ok, _three_vendor_msg
+    ok, msg = ensure_three_vendor(web_root)
+    _three_vendor_ok, _three_vendor_msg = ok, msg
+    print(f"[ui] {msg}")
     session.connect()
 
 
@@ -311,21 +289,25 @@ def api_config():
         "arm_model": session.robot.arm_model,
         "simulated": session.robot.is_simulated,
         "llm_backend": session.llm_backend,
+        "three_js": {
+            "ready": _three_vendor_ok,
+            "path": str(three_vendor_path(web_root)),
+            "message": _three_vendor_msg,
+        },
     }
 
 
 @app.get("/api/state")
 def api_state():
-    try:
-        return {
-            "status": "done",
-            "state": session.state(),
-            "events": session.last_tool_events,
-            "camera_path": session.last_camera_path,
-            "detection": session.last_detection,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+    payload = session.telemetry_payload()
+    return {
+        "status": "done",
+        "state": payload["state"],
+        "events": payload["events"],
+        "goal_status": payload["goal_status"],
+        "camera_path": session.last_camera_path,
+        "detection": payload["detection"],
+    }
 
 
 @app.post("/api/tool")
@@ -383,17 +365,14 @@ async def ws_telemetry(ws: WebSocket):
     await ws.accept()
     try:
         while True:
-            payload: dict[str, Any] = {
-                "ts": time.time(),
-                "events": session.last_tool_events,
-                "goal_status": session.goal_status,
-                "detection": session.last_detection,
-            }
-            try:
-                payload["state"] = session.state()
-            except Exception as e:
-                payload["state"] = {"error": str(e)}
+            payload = await asyncio.to_thread(session.telemetry_payload)
             await ws.send_json(payload)
-            await asyncio.sleep(0.35)
-    except Exception:
-        await ws.close()
+            await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        print(f"[telemetry ws] closed: {e}")
+        try:
+            await ws.close(code=1011)
+        except Exception:
+            pass

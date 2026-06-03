@@ -7,16 +7,41 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.programs import is_program_allowed
-from config.settings import ALLOWED_URP_PROGRAMS, CAMERA_TYPE, MAX_SINGLE_MOVE_DOWN
-from policy.safety import PolicyEngine
+from config.settings import (
+    ALLOWED_URP_PROGRAMS,
+    CAMERA_TYPE,
+    MAX_SINGLE_MOVE_DOWN,
+    MOTION_BACKWARD_VEC,
+    MOTION_DOWN_VEC,
+    MOTION_FORWARD_VEC,
+    MOTION_LEFT_VEC,
+    MOTION_RIGHT_VEC,
+    MOTION_UP_VEC,
+)
+from policy.safety import MOTION_TOOLS, PolicyEngine
 from robot.base import RobotDriver
 
 if CAMERA_TYPE == "realsense":
-    from camera import RealSenseCamera
+    from camera import ObjectDetector, RealSenseCamera
 else:
     RealSenseCamera = None
+    ObjectDetector = None
 
 _camera = None
+_detector = None
+
+
+def _distance_magnitude(distance_m: float, tool_name: str) -> float:
+    """Directional tools use positive distance_m only; sign is set by the tool itself."""
+    d = abs(float(distance_m))
+    if d < 1e-6:
+        raise ValueError(f"{tool_name}: distance_m must be non-zero.")
+    if float(distance_m) < 0:
+        print(
+            f"  [WARN] {tool_name}: negative distance_m ({distance_m}) "
+            f"ignored — using {d} m in the correct direction."
+        )
+    return d
 
 
 def get_robot_state(robot: RobotDriver, policy: PolicyEngine) -> dict:
@@ -67,56 +92,62 @@ def move_linear(
     return {"status": "done", "final_tcp": robot.get_tcp_pose()}
 
 
+def _motion_result(requested_m: float, motion_report: dict | None) -> dict:
+    out = {"status": "done", "requested_m": requested_m}
+    if motion_report:
+        out["achieved_m"] = motion_report.get("achieved_m")
+        out["commanded_m"] = motion_report.get("commanded_m")
+        out["final_tcp"] = motion_report.get("final_tcp") or []
+    else:
+        out["final_tcp"] = []
+    return out
+
+
+def _move_along_axis(robot: RobotDriver, tool_name: str, axis: tuple[float, float, float], distance_m: float) -> dict:
+    d = _distance_magnitude(distance_m, tool_name)
+    dx, dy, dz = (axis[0] * d, axis[1] * d, axis[2] * d)
+    print(f"  [TOOL] {tool_name} {d * 100:.1f}cm  (base Δ [{dx:.3f}, {dy:.3f}, {dz:.3f}])")
+    report = robot.move_tcp_relative(dx=dx, dy=dy, dz=dz)
+    result = _motion_result(d, report)
+    result["base_delta"] = [round(dx, 4), round(dy, 4), round(dz, 4)]
+    return result
+
+
 def move_up(robot: RobotDriver, distance_m: float = 0.05) -> dict:
-    print(f"  [TOOL] move_up {distance_m * 100:.1f}cm")
-    robot.move_tcp_relative(dz=distance_m)
-    return {
-        "status": "done",
-        "moved_up_m": distance_m,
-        "final_tcp": robot.get_tcp_pose(),
-    }
+    result = _move_along_axis(robot, "move_up", MOTION_UP_VEC, distance_m)
+    result["moved_up_m"] = result["requested_m"]
+    return result
 
 
 def move_down(robot: RobotDriver, distance_m: float = 0.05) -> dict:
-    if distance_m > MAX_SINGLE_MOVE_DOWN:
+    d = _distance_magnitude(distance_m, "move_down")
+    if d > MAX_SINGLE_MOVE_DOWN:
         return {
             "status": "error",
             "reason": (
-                f"distance_m={distance_m} exceeds global limit {MAX_SINGLE_MOVE_DOWN}m. "
+                f"distance_m={d} exceeds global limit {MAX_SINGLE_MOVE_DOWN}m. "
                 "Split into smaller moves."
             ),
         }
-    print(f"  [TOOL] move_down {distance_m * 100:.1f}cm")
-    robot.move_tcp_relative(dz=-distance_m)
-    return {
-        "status": "done",
-        "moved_down_m": distance_m,
-        "final_tcp": robot.get_tcp_pose(),
-    }
+    result = _move_along_axis(robot, "move_down", MOTION_DOWN_VEC, distance_m)
+    result["moved_down_m"] = result["requested_m"]
+    return result
 
 
 def move_left(robot: RobotDriver, distance_m: float = 0.05) -> dict:
-    print(f"  [TOOL] move_left {distance_m * 100:.1f}cm")
-    robot.move_tcp_relative(dy=-distance_m)
-    return {"status": "done", "final_tcp": robot.get_tcp_pose()}
+    return _move_along_axis(robot, "move_left", MOTION_LEFT_VEC, distance_m)
 
 
 def move_right(robot: RobotDriver, distance_m: float = 0.05) -> dict:
-    print(f"  [TOOL] move_right {distance_m * 100:.1f}cm")
-    robot.move_tcp_relative(dy=distance_m)
-    return {"status": "done", "final_tcp": robot.get_tcp_pose()}
+    return _move_along_axis(robot, "move_right", MOTION_RIGHT_VEC, distance_m)
 
 
 def move_forward(robot: RobotDriver, distance_m: float = 0.05) -> dict:
-    print(f"  [TOOL] move_forward {distance_m * 100:.1f}cm")
-    robot.move_tcp_relative(dx=distance_m)
-    return {"status": "done", "final_tcp": robot.get_tcp_pose()}
+    return _move_along_axis(robot, "move_forward", MOTION_FORWARD_VEC, distance_m)
 
 
 def move_backward(robot: RobotDriver, distance_m: float = 0.05) -> dict:
-    print(f"  [TOOL] move_backward {distance_m * 100:.1f}cm")
-    robot.move_tcp_relative(dx=-distance_m)
-    return {"status": "done", "final_tcp": robot.get_tcp_pose()}
+    return _move_along_axis(robot, "move_backward", MOTION_BACKWARD_VEC, distance_m)
 
 
 def stop_robot(robot: RobotDriver) -> dict:
@@ -193,19 +224,88 @@ def stop_urp_program(robot: RobotDriver) -> dict:
     return robot.stop_urp_program()
 
 
-def get_camera_frame(robot: RobotDriver, session_id: str = "lab", prefix: str = "frame") -> dict:
-    del robot  # camera can be used even if robot motion is blocked
+def _ensure_camera():
+    global _camera, _detector
     if CAMERA_TYPE == "none":
-        return {"status": "error", "reason": "Camera disabled (CAMERA_TYPE=none)."}
+        return None, {"status": "error", "reason": "Camera disabled (CAMERA_TYPE=none)."}
     if RealSenseCamera is None:
-        return {"status": "error", "reason": "RealSense camera module unavailable."}
-
-    global _camera
+        return None, {"status": "error", "reason": "RealSense camera module unavailable."}
     if _camera is None:
         _camera = RealSenseCamera()
+    if _detector is None and ObjectDetector is not None:
+        _detector = ObjectDetector()
+    return _camera, None
+
+
+def get_camera_frame(robot: RobotDriver, session_id: str = "lab", prefix: str = "frame") -> dict:
+    del robot
+    cam, err = _ensure_camera()
+    if err:
+        return err
     print("  [TOOL] get_camera_frame")
     try:
-        return _camera.save_color_frame(session_id=session_id, prefix=prefix)
+        return cam.save_color_frame(session_id=session_id, prefix=prefix)
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
+
+
+def detect_objects(
+    robot: RobotDriver,
+    save_image: bool = False,
+    session_id: str = "lab",
+    prefix: str = "detect",
+    label_filter: str = "",
+) -> dict:
+    del robot
+    cam, err = _ensure_camera()
+    if err:
+        return err
+    if _detector is None:
+        return {"status": "error", "reason": "Object detector unavailable."}
+
+    print("  [TOOL] detect_objects")
+    try:
+        frame = cam.capture_color_frame()
+        meta = _detector.detect(frame)
+        objects = meta.get("objects", [])
+        if label_filter:
+            needle = label_filter.strip().lower()
+            objects = [o for o in objects if needle in str(o.get("label", "")).lower()]
+            labels = [o["label"] for o in objects]
+            meta = {
+                **meta,
+                "objects": objects,
+                "count": len(objects),
+                "labels": labels,
+                "unique_labels": list(dict.fromkeys(labels)),
+                "label_filter": label_filter,
+            }
+
+        result = {
+            "status": "done",
+            "count": meta.get("count", 0),
+            "labels": meta.get("labels", []),
+            "unique_labels": meta.get("unique_labels", []),
+            "detector": meta.get("detector"),
+            "model": meta.get("model"),
+            "objects": objects,
+            "image_shape": list(frame.shape),
+        }
+        if save_image:
+            import cv2
+            import datetime as dt
+            import os
+
+            from config.settings import CAMERA_OUTPUT_DIR
+
+            drawn = _detector.draw_boxes(frame, meta)
+            out_dir = os.path.abspath(CAMERA_OUTPUT_DIR)
+            os.makedirs(out_dir, exist_ok=True)
+            stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            path = os.path.join(out_dir, f"{prefix}_{session_id}_{stamp}.jpg")
+            if cv2.imwrite(path, drawn):
+                result["annotated_path"] = path
+        return result
     except Exception as e:
         return {"status": "error", "reason": str(e)}
 
@@ -216,6 +316,13 @@ def execute_tool(
     robot: RobotDriver,
     policy: PolicyEngine,
 ) -> dict:
+    if (
+        name in MOTION_TOOLS
+        and policy.site.require_state_before_move
+        and not policy._state_read_this_goal
+    ):
+        get_robot_state(robot, policy)
+
     block = policy.validate_before_move(robot, name, inputs)
     if block:
         print(f"  [POLICY] blocked: {block['reason']}")
@@ -249,6 +356,7 @@ def execute_tool(
         "release_rtde_control": lambda: release_rtde_control(robot),
         "reconnect_rtde_control": lambda: reconnect_rtde_control(robot),
         "get_camera_frame": lambda: get_camera_frame(robot, **inputs),
+        "detect_objects": lambda: detect_objects(robot, **inputs),
     }
     fn = dispatch.get(name)
     if fn is None:
@@ -299,19 +407,29 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "move_up",
-        "description": "Move TCP up (positive Z) in meters.",
+        "description": "Move TCP up (positive Z). distance_m is positive magnitude in meters (0.02 = 2 cm).",
         "input_schema": {
             "type": "object",
-            "properties": {"distance_m": {"type": "number"}},
+            "properties": {
+                "distance_m": {
+                    "type": "number",
+                    "description": "Positive distance in meters (never negative)",
+                }
+            },
             "required": ["distance_m"],
         },
     },
     {
         "name": "move_down",
-        "description": "Move TCP down (negative Z). Site policy may limit distance per step.",
+        "description": "Move TCP down. distance_m is positive magnitude in meters (0.02 = 2 cm). Site may cap per step.",
         "input_schema": {
             "type": "object",
-            "properties": {"distance_m": {"type": "number"}},
+            "properties": {
+                "distance_m": {
+                    "type": "number",
+                    "description": "Positive distance in meters (never negative)",
+                }
+            },
             "required": ["distance_m"],
         },
     },
@@ -411,6 +529,29 @@ TOOL_SCHEMAS = [
             "properties": {
                 "session_id": {"type": "string", "description": "Session tag in saved filename"},
                 "prefix": {"type": "string", "description": "Filename prefix"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "detect_objects",
+        "description": (
+            "Capture a live camera frame and run object detection (YOLO or contour fallback). "
+            "Returns count, label names, and bounding boxes in image pixels."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "save_image": {
+                    "type": "boolean",
+                    "description": "If true, save annotated JPEG with boxes drawn",
+                },
+                "session_id": {"type": "string", "description": "Session tag when saving image"},
+                "prefix": {"type": "string", "description": "Filename prefix when saving image"},
+                "label_filter": {
+                    "type": "string",
+                    "description": "Optional substring filter (e.g. 'cup') — only matching objects returned",
+                },
             },
             "required": [],
         },

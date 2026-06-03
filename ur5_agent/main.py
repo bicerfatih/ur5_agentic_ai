@@ -101,6 +101,7 @@ def main():
     print("  → go to home position")
     print("  → open the gripper")
     print("  → capture a camera frame")
+    print("  → detect objects in the camera view")
     print("  → run program fly2.urp\n")
 
     try:

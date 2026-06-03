@@ -18,6 +18,23 @@ MAX_LINEAR_SPEED = 0.2
 MAX_LINEAR_ACCEL = 0.2
 MAX_SINGLE_MOVE_DOWN = 0.10
 
+# ── Semantic move directions (robot BASE frame, not tool frame) ──
+# Unit vectors as "dx,dy,dz". Override per cell if "right" / "down" feel wrong.
+def _motion_vec(env_key: str, default: str) -> tuple[float, float, float]:
+    raw = os.environ.get(env_key, default).strip()
+    parts = [float(x.strip()) for x in raw.split(",")]
+    if len(parts) != 3:
+        raise ValueError(f"{env_key} must be three comma-separated numbers, got {raw!r}")
+    return (parts[0], parts[1], parts[2])
+
+
+MOTION_UP_VEC = _motion_vec("MOTION_UP_VEC", "0,0,1")
+MOTION_DOWN_VEC = _motion_vec("MOTION_DOWN_VEC", "0,0,-1")
+MOTION_RIGHT_VEC = _motion_vec("MOTION_RIGHT_VEC", "0,1,0")
+MOTION_LEFT_VEC = _motion_vec("MOTION_LEFT_VEC", "0,-1,0")
+MOTION_FORWARD_VEC = _motion_vec("MOTION_FORWARD_VEC", "1,0,0")
+MOTION_BACKWARD_VEC = _motion_vec("MOTION_BACKWARD_VEC", "-1,0,0")
+
 # ── Safe home position (joint angles in radians) ───────
 HOME_JOINTS = [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0]
 
@@ -27,7 +44,7 @@ LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
 # ── Ollama (local, offline-capable) ────────────────────
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
-OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "1024"))
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "384"))
 
 # ── Claude (optional) ──────────────────────────────────
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")

@@ -19,6 +19,7 @@ class BaseRobotAgent:
         self.site = site
         self.policy = PolicyEngine(site=site)
         self.system_prompt = build_system_prompt(site, robot)
+        self.last_run_note: str | None = None
         os.makedirs("logs", exist_ok=True)
 
     def _log(self, text: str):
@@ -46,6 +47,7 @@ class BaseRobotAgent:
         self._log(f"GOAL: {goal}")
 
         self.policy.begin_goal()
+        self.last_run_note = None
         messages = self._initial_messages(goal)
         step = 0
         max_steps = self.site.max_steps_per_goal
@@ -69,7 +71,9 @@ class BaseRobotAgent:
                 self._log(f"DONE after {step} steps")
                 break
 
-            messages = self._append_tool_round(messages, tool_calls)
+            messages, notes = self._append_tool_round(messages, tool_calls)
+            if notes:
+                self.last_run_note = notes
 
             if step >= max_steps:
                 print(f"⚠️  Max steps ({max_steps}) reached. Stopping.")
@@ -79,14 +83,15 @@ class BaseRobotAgent:
     def _initial_messages(self, goal: str) -> list:
         raise NotImplementedError
 
-    def _append_tool_round(self, messages: list, tool_calls: list) -> list:
+    def _append_tool_round(self, messages: list, tool_calls: list) -> tuple[list, str | None]:
         raise NotImplementedError
 
     @staticmethod
-    def _execute_tools(robot, policy, tool_calls: list) -> list[dict]:
+    def _execute_tools(robot, policy, tool_calls: list) -> tuple[list[dict], str | None]:
         from robot.tools import execute_tool
 
         results = []
+        last_note = None
         for call in tool_calls:
             name = call["name"]
             args = call.get("arguments") or {}
@@ -97,10 +102,15 @@ class BaseRobotAgent:
 
             try:
                 result = execute_tool(name, args, robot, policy)
+            except ValueError as e:
+                result = {"status": "error", "reason": str(e)}
+                print(f"   ❌ Tool error: {e}")
             except Exception as e:
                 result = {"status": "error", "reason": str(e)}
                 print(f"   ❌ Tool error: {e}")
 
             print(f"   → {result}")
             results.append({"name": name, "result": result})
-        return results
+            if isinstance(result, dict) and result.get("status") == "error":
+                last_note = f"{name}: {result.get('reason', 'error')}"
+        return results, last_note

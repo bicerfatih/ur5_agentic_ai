@@ -58,6 +58,10 @@ python3 main.py --robot ur5 --site lab
 # Camera quick test
 python3 scripts/test_camera.py
 
+# Object detection (YOLO or contour fallback)
+python3 scripts/detect_test.py
+python3 scripts/detect_test.py --save-image --label-filter cup
+
 # Futuristic Robot Ops Console UI
 export UI_DRY_RUN=1   # remove for live robot
 python3 scripts/run_ops_console.py
@@ -92,6 +96,7 @@ Environment overrides: `LLM_BACKEND`, `OLLAMA_MODEL`, `OLLAMA_HOST`, `ROBOT_TYPE
 - `move forward 8cm` (may be blocked into smaller steps at `airport_ground`)
 - `what is the TCP force right now?`
 - `capture a camera frame for this session`
+- `detect objects in the camera and tell me what you see`
 
 REPL shortcuts: `state`, `quit`.
 
