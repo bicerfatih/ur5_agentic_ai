@@ -3,15 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Robot Ops Console</title>
-  <link rel="stylesheet" href="/assets/styles.css?v=2" />
+  <title>EMiRO · Robot Ops Console</title>
+  <link rel="icon" href="/assets/emiro-logo.png" type="image/png" />
+  <link rel="stylesheet" href="/assets/styles.css?v=6" />
 </head>
 <body>
   <div class="bg-grid"></div>
   <header class="topbar">
-    <div>
-      <h1>Robot Ops Console</h1>
-      <p id="subtitle">Agentic Physical AI Mission Control</p>
+    <div class="topbar-brand">
+      <a class="brand-mark" href="/" title="EMiRO">
+        <img
+          class="brand-logo"
+          src="/assets/emiro-logo.png?v=1"
+          alt="EMiRO"
+        />
+      </a>
+      <div class="brand-text">
+        <p class="brand-tag">EMiRO</p>
+        <h1>Robot Ops Console</h1>
+        <p id="subtitle">Agentic Physical AI Mission Control</p>
+      </div>
     </div>
     <div class="status-cluster">
       <span class="pill" id="site-pill">site: -</span>
@@ -32,24 +43,16 @@
       <div class="small">3D when Three.js loads; otherwise 2D stick figure. Drag/zoom (3D); double-click reframe.</div>
     </section>
 
-    <section class="panel controls">
-      <h2>Tool Console</h2>
-      <div class="buttons">
-        <button data-tool="get_robot_state">Get State</button>
-        <button data-tool="move_home">Home</button>
-        <button data-tool="open_gripper">Open Gripper</button>
-        <button data-tool="close_gripper">Close Gripper</button>
-        <button data-tool="get_camera_frame">Capture Frame</button>
-        <button data-tool="detect_objects">Detect Objects</button>
-      </div>
+    <section class="panel camera">
+      <h2>Camera View</h2>
       <div class="row">
-        <input id="tool-name" placeholder="custom tool name (e.g. move_up)" />
+        <button id="capture-and-refresh">Capture + Refresh Preview</button>
+        <button id="live-feed-toggle">Stop Live Feed</button>
+        <button id="detect-toggle">Detect OFF</button>
       </div>
-      <div class="row">
-        <textarea id="tool-inputs" rows="4" placeholder='{"distance_m":0.03}'></textarea>
-      </div>
-      <button id="run-custom">Run Custom Tool</button>
-      <pre id="tool-result" class="log"></pre>
+      <img id="camera-preview" alt="Live camera feed" />
+      <div id="camera-hint" class="small">Starting live feed…</div>
+      <div id="detected-labels" class="detected-summary">Detected: —</div>
     </section>
 
     <section class="panel goal">
@@ -66,16 +69,25 @@
       <pre id="telemetry" class="log"></pre>
     </section>
 
-    <section class="panel camera">
-      <h2>Camera View</h2>
-      <div class="row">
-        <button id="capture-and-refresh">Capture + Refresh Preview</button>
-        <button id="live-feed-toggle">Start Live Feed</button>
-        <button id="detect-toggle">Detect OFF</button>
+    <section class="panel controls">
+      <h2>Tool Console</h2>
+      <div class="buttons">
+        <button data-tool="get_robot_state">Get State</button>
+        <button data-tool="move_home">Home</button>
+        <button data-tool="open_gripper">Open Gripper</button>
+        <button data-tool="close_gripper">Close Gripper</button>
+        <button data-tool="toggle_gripper">Toggle Gripper</button>
+        <button data-tool="get_camera_frame">Capture Frame</button>
+        <button data-tool="detect_objects">Detect Objects</button>
       </div>
-      <img id="camera-preview" alt="Latest capture preview" />
-      <div id="camera-hint" class="small">No capture yet.</div>
-      <div id="detected-labels" class="detected-summary">Detected: —</div>
+      <div class="row">
+        <input id="tool-name" placeholder="custom tool name (e.g. move_up)" />
+      </div>
+      <div class="row">
+        <textarea id="tool-inputs" rows="4" placeholder='{"distance_m":0.03}'></textarea>
+      </div>
+      <button id="run-custom">Run Custom Tool</button>
+      <pre id="tool-result" class="log"></pre>
     </section>
 
     <section class="panel events">
@@ -86,6 +98,6 @@
 
   <script src="/assets/vendor/three.min.js"></script>
   <script src="/assets/twin.js?v=12"></script>
-  <script src="/assets/app.js?v=4"></script>
+  <script src="/assets/app.js?v=5"></script>
 </body>
 </html>

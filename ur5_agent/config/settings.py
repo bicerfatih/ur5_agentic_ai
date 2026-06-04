@@ -62,6 +62,9 @@ ROBOTIQ_OPEN_POS = int(os.environ.get("ROBOTIQ_OPEN_POS", "0"))
 ROBOTIQ_CLOSE_POS = int(os.environ.get("ROBOTIQ_CLOSE_POS", "229"))  # 2F-85 typical max ~229
 ROBOTIQ_SPEED = int(os.environ.get("ROBOTIQ_SPEED", "255"))
 ROBOTIQ_FORCE = int(os.environ.get("ROBOTIQ_FORCE", "255"))
+# After connect/activate: close | open | none (none = leave as-is after Robotiq activate)
+GRIPPER_INITIAL = os.environ.get("GRIPPER_INITIAL", "close").strip().lower()
+GRIPPER_TOGGLE_PAUSE_SEC = float(os.environ.get("GRIPPER_TOGGLE_PAUSE_SEC", "0.6"))
 
 # Legacy pneumatic I/O (not used when GRIPPER_TYPE=robotiq):
 # Pins 2 & 3 = feedback inputs only. Standard DO 0/1 = commands if using dual_pin.

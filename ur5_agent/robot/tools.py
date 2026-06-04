@@ -3,6 +3,7 @@
 import math
 import os
 import sys
+import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -10,6 +11,8 @@ from config.programs import is_program_allowed
 from config.settings import (
     ALLOWED_URP_PROGRAMS,
     CAMERA_TYPE,
+    GRIPPER_TOGGLE_PAUSE_SEC,
+    GRIPPER_TYPE,
     MAX_SINGLE_MOVE_DOWN,
     MOTION_BACKWARD_VEC,
     MOTION_DOWN_VEC,
@@ -17,6 +20,8 @@ from config.settings import (
     MOTION_LEFT_VEC,
     MOTION_RIGHT_VEC,
     MOTION_UP_VEC,
+    ROBOTIQ_CLOSE_POS,
+    ROBOTIQ_OPEN_POS,
 )
 from policy.safety import MOTION_TOOLS, PolicyEngine
 from robot.base import RobotDriver
@@ -178,6 +183,32 @@ def close_gripper(robot: RobotDriver) -> dict:
         "important": state.get("pendant_check", ""),
         "output_readback": state.get("output_readback", {}),
     }
+
+
+def _gripper_is_open(state: dict) -> bool:
+    if GRIPPER_TYPE == "robotiq":
+        pos = state.get("position")
+        if isinstance(pos, (int, float)):
+            mid = (ROBOTIQ_OPEN_POS + ROBOTIQ_CLOSE_POS) / 2
+            return float(pos) < mid
+    cmd = state.get("last_command") or state.get("command_state") or ""
+    return str(cmd).lower() == "open"
+
+
+def toggle_gripper(robot: RobotDriver) -> dict:
+    """Open then close — always ends closed (exercises the gripper either way)."""
+    state = robot.get_gripper_state()
+    was_open = _gripper_is_open(state)
+    print(
+        f"  [TOOL] toggle_gripper (was {'open' if was_open else 'closed'}) → open then close"
+    )
+    open_gripper(robot)
+    time.sleep(max(0.1, GRIPPER_TOGGLE_PAUSE_SEC))
+    result = close_gripper(robot)
+    result["toggled_from"] = "open" if was_open else "closed"
+    result["toggled_to"] = "closed"
+    result["sequence"] = ["open", "close"]
+    return result
 
 
 def list_urp_programs(robot: RobotDriver) -> dict:
@@ -350,6 +381,7 @@ def execute_tool(
         "stop_robot": lambda: stop_robot(robot),
         "open_gripper": lambda: open_gripper(robot),
         "close_gripper": lambda: close_gripper(robot),
+        "toggle_gripper": lambda: toggle_gripper(robot),
         "list_urp_programs": lambda: list_urp_programs(robot),
         "run_urp_program": lambda: run_urp_program(robot, **inputs),
         "stop_urp_program": lambda: stop_urp_program(robot),
@@ -482,6 +514,14 @@ TOOL_SCHEMAS = [
     {
         "name": "close_gripper",
         "description": "Close the Robotiq gripper (URCap socket, PolyScope ID 1).",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "toggle_gripper",
+        "description": (
+            "Gripper toggle cycle: always open, pause, then close. "
+            "Always ends closed regardless of starting state."
+        ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {

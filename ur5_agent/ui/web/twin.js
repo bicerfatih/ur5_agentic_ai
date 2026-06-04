@@ -393,7 +393,7 @@
       }
 
       this._buildGripper(this.flangeFrame);
-      this._setGripperOpen(true);
+      this._setGripperOpen(false);
       this.hasRealTcp = false;
       this._applyFk(HOME_JOINTS);
     }

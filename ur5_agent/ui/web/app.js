@@ -307,6 +307,8 @@ async function init() {
   telemetryPollTimer = setInterval(() => pullTelemetry(site), 1000);
 
   connectTelemetryWs(site);
+
+  setLiveFeed(true);
 }
 
 function loadThreeJs(timeoutMs = 15000) {

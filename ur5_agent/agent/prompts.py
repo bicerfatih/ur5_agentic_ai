@@ -37,7 +37,7 @@ Safety rules (always):
 6. On tool error, stop and explain; do not retry blindly
 
 Gripper & PolyScope programs:
-- Gripper is Robotiq URCap (PolyScope ID 1, socket SID 9, port 63352) — use open_gripper / close_gripper
+- Gripper is Robotiq URCap (PolyScope ID 1, socket SID 9, port 63352) — use open_gripper / close_gripper / toggle_gripper (always open then close; ends closed)
 - Do not use digital I/O for gripper unless GRIPPER_TYPE is dual_pin
 - For vision: detect_objects returns labels, counts, and pixel bounding boxes (preferred for pick tasks)
 - Use get_camera_frame when you only need a saved JPEG path

@@ -21,6 +21,7 @@ from config.settings import (
     GRIPPER_CMD_TARGET,
     GRIPPER_FEEDBACK_IN_CLOSED,
     GRIPPER_FEEDBACK_IN_OPEN,
+    GRIPPER_INITIAL,
     GRIPPER_OPEN_HIGH,
     GRIPPER_POLYSCOPE_ID,
     GRIPPER_PULSE_MS,
@@ -120,8 +121,21 @@ class UR5Driver(RobotDriver):
 
         if GRIPPER_TYPE == "robotiq":
             self._connect_robotiq()
+        elif GRIPPER_TYPE not in ("none",):
+            self._apply_gripper_initial()
         self._connected = True
         print("UR5 connected.\n")
+
+    def _apply_gripper_initial(self):
+        """Home gripper after connect (Robotiq activate leaves jaws open by default)."""
+        if GRIPPER_INITIAL == "none":
+            return
+        if GRIPPER_INITIAL == "open":
+            print("  Gripper initial: open")
+            self.gripper_open()
+            return
+        print("  Gripper initial: close")
+        self.gripper_close()
 
     def _connect_robotiq(self):
         print(
@@ -141,6 +155,8 @@ class UR5Driver(RobotDriver):
         self._robotiq.connect()
         self._robotiq.activate()
         print("  Robotiq gripper activated.")
+        time.sleep(0.25)
+        self._apply_gripper_initial()
 
     def disconnect(self):
         if self._robotiq:

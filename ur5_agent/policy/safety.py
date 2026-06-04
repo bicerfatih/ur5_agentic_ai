@@ -106,6 +106,7 @@ class PolicyEngine:
             "run_urp_program",
             "open_gripper",
             "close_gripper",
+            "toggle_gripper",
         )
         if needs_ready:
             err = self.check_robot_ready(robot)

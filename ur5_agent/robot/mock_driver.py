@@ -40,7 +40,10 @@ class MockDriver(RobotDriver):
         return self._motion_log
 
     def connect(self):
+        from config.settings import GRIPPER_INITIAL
+
         self._connected = True
+        self._gripper_state = "open" if GRIPPER_INITIAL == "open" else "closed"
         print(f"[DRY-RUN] Mock driver ready ({self._arm_model}, {self._label}).\n")
 
     def disconnect(self):

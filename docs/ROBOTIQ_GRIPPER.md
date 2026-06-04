@@ -16,7 +16,10 @@ Defaults in `config/settings.py`:
 GRIPPER_TYPE=robotiq
 GRIPPER_POLYSCOPE_ID=1
 ROBOTIQ_SOCKET_SID=9
+GRIPPER_INITIAL=close
 ```
+
+On connect, the driver activates the gripper then **closes** it (`GRIPPER_INITIAL=close`, default). Robotiq activation alone leaves the jaw open. Set `GRIPPER_INITIAL=open` or `none` to change that.
 
 Digital I/O (standard DO 0/1) does **not** move a Robotiq gripper — that was why the jaw never moved.
 
