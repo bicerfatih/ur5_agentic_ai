@@ -101,7 +101,7 @@ class BaseRobotAgent:
             print(f"\n🔧  {name}({json.dumps(args, separators=(',', ':'))})")
 
             try:
-                result = execute_tool(name, args, robot, policy)
+                result = execute_tool(name, args, robot, policy, caller="agent")
             except ValueError as e:
                 result = {"status": "error", "reason": str(e)}
                 print(f"   ❌ Tool error: {e}")

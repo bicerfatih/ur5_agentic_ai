@@ -8,7 +8,7 @@ from agent.base_agent import BaseRobotAgent
 from config.settings import CLAUDE_MAX_TOKENS, CLAUDE_MODEL
 from config.sites import SiteProfile
 from robot.base import RobotDriver
-from robot.tools import TOOL_SCHEMAS
+from agent.schemas import agent_tool_schemas
 
 
 class ClaudeRobotAgent(BaseRobotAgent):
@@ -28,7 +28,7 @@ class ClaudeRobotAgent(BaseRobotAgent):
             model=CLAUDE_MODEL,
             max_tokens=CLAUDE_MAX_TOKENS,
             system=self.system_prompt,
-            tools=TOOL_SCHEMAS,
+            tools=agent_tool_schemas(),
             messages=messages,
         )
 

@@ -7,6 +7,7 @@ const sitePill = $("site-pill");
 const armPill = $("arm-pill");
 const modePill = $("mode-pill");
 const safetyPill = $("safety-pill");
+const motionPill = $("motion-pill");
 const cameraPreview = $("camera-preview");
 const cameraHint = $("camera-hint");
 const detectedLabelsEl = $("detected-labels");
@@ -99,6 +100,20 @@ function renderState(payload) {
   armPill.textContent = `arm: ${st.arm_model || "-"}`;
   modePill.textContent = `mode: ${st.robot_mode}`;
   safetyPill.textContent = `safety: ${st.safety_mode}`;
+  const rtde = st.rtde_control || {};
+  const motionOk = rtde.motion_enabled !== false && rtde.connected !== false;
+  if (st.simulated) {
+    motionPill.textContent = "motion: sim";
+    motionPill.style.borderColor = "rgba(34,197,94,.6)";
+  } else if (rtde.connected === false || rtde.motion_enabled === false) {
+    motionPill.textContent = "motion: OFF";
+    motionPill.style.borderColor = "rgba(239,68,68,.85)";
+    motionPill.title = rtde.hint || "RTDE control not connected";
+  } else {
+    motionPill.textContent = "motion: ON";
+    motionPill.style.borderColor = "rgba(34,197,94,.6)";
+    motionPill.title = "";
+  }
   modePill.style.borderColor = st.robot_mode === 7 ? "rgba(34,197,94,.6)" : "rgba(245,158,11,.7)";
   safetyPill.style.borderColor = st.safety_mode === 1 ? "rgba(34,197,94,.6)" : "rgba(245,158,11,.7)";
   stateEl.textContent = JSON.stringify(st, null, 2);

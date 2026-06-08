@@ -87,7 +87,7 @@ python3 main.py --llm claude --robot ur5 --site lab
 | `--llm claude` | Anthropic API (needs `ANTHROPIC_API_KEY`) |
 | `--model TAG` | Ollama model, e.g. `qwen2.5:7b`, `llama3.1:8b` |
 
-Environment overrides: `LLM_BACKEND`, `OLLAMA_MODEL`, `OLLAMA_HOST`, `ROBOT_TYPE`, `SITE_ID`, `DRY_RUN=1`, `ROBOT_HOST`.
+Environment overrides: `LLM_BACKEND`, `OLLAMA_MODEL`, `OLLAMA_HOST`, `OLLAMA_KEEP_ALIVE` (default `30m`), `OLLAMA_WARMUP_ENABLED`, `OLLAMA_NUM_PREDICT`, `ROBOT_TYPE`, `SITE_ID`, `DRY_RUN=1`, `ROBOT_HOST`. Ops console warms Ollama on startup for faster first Agentic AI goal.
 
 ## Example goals
 

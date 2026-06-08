@@ -23,6 +23,13 @@ MOTION_TOOLS = {
 ROBOT_MODE_RUNNING = 7
 SAFETY_MODE_NORMAL = 1
 
+# Taught UR5 home pose in degrees (agent must not command this unless UI / explicit allow).
+_HOME_JOINTS_DEG = [0.0, -90.0, 0.0, -90.0, 0.0, 0.0]
+
+_AGENT_BLOCKED_TOOLS = frozenset(
+    {"move_home", "move_joint", "release_rtde_control", "run_urp_program"}
+)
+
 
 @dataclass
 class PolicyEngine:
@@ -68,12 +75,50 @@ class PolicyEngine:
         ls = min(linear_speed or 0.1, self.site.max_linear_speed)
         return js, ls
 
+    @staticmethod
+    def _is_home_joint_command(joint_positions_deg: list) -> bool:
+        if not joint_positions_deg or len(joint_positions_deg) < 6:
+            return False
+        return all(
+            abs(float(joint_positions_deg[i]) - _HOME_JOINTS_DEG[i]) < 3.0 for i in range(6)
+        )
+
+    def validate_caller(self, caller: str, tool_name: str, inputs: dict) -> dict | None:
+        """Block agent from homing, joint moves to home, or RTDE/URP recovery tricks."""
+        if caller != "agent":
+            return None
+        if tool_name in _AGENT_BLOCKED_TOOLS:
+            return {
+                "status": "error",
+                "reason": (
+                    f"Tool '{tool_name}' is not allowed for Agentic AI "
+                    "(prevents unwanted homing / program changes). Use Tool Console buttons "
+                    "or ask the operator to fix the pendant."
+                ),
+            }
+        if tool_name == "move_joint":
+            joints = inputs.get("joint_positions_deg") or []
+            if self._is_home_joint_command(joints):
+                return {
+                    "status": "error",
+                    "reason": (
+                        "Agentic AI cannot command home joint pose. "
+                        "Use the Home button in Tool Console if the operator requests home."
+                    ),
+                }
+        return None
+
     def validate_before_move(
         self,
         robot: RobotDriver,
         tool_name: str,
         inputs: dict,
+        caller: str = "ui",
     ) -> dict | None:
+        blocked = self.validate_caller(caller, tool_name, inputs)
+        if blocked:
+            return blocked
+
         if tool_name in ("get_robot_state", "list_urp_programs"):
             return None
 

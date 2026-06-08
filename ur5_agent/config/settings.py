@@ -44,7 +44,22 @@ LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
 # ── Ollama (local, offline-capable) ────────────────────
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
-OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "384"))
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "256"))
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
+# Keep model loaded between goals (e.g. 30m, 1h). Use -1 to hold until Ollama exits.
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m").strip()
+OLLAMA_WARMUP_ENABLED = os.environ.get("OLLAMA_WARMUP_ENABLED", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# Agent (LLM) may call move_home only if user explicitly enables it (Tool Console Home button always works).
+AGENT_ALLOW_MOVE_HOME = os.environ.get("AGENT_ALLOW_MOVE_HOME", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # ── Claude (optional) ──────────────────────────────────
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")

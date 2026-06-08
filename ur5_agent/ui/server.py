@@ -103,6 +103,11 @@ class RobotSession:
             self.live_camera = None
 
     def state(self) -> dict[str, Any]:
+        if getattr(self.robot, "motion_busy", False) and self.last_good_state is not None:
+            cached = dict(self.last_good_state)
+            cached["telemetry_stale"] = True
+            cached["motion_in_progress"] = True
+            return cached
         try:
             st = self.robot.get_full_state()
             self.last_good_state = st
@@ -158,13 +163,13 @@ class RobotSession:
         return evt
 
     def _ensure_agent(self):
-        if self.agent is None:
-            self.agent = create_agent(
-                robot=self.robot,
-                site=self.site,
-                llm=self.llm_backend,
-                ollama_model=os.environ.get("UI_MODEL"),
-            )
+        # Fresh agent each goal so tool list + prompts stay current (no stale move_home).
+        self.agent = create_agent(
+            robot=self.robot,
+            site=self.site,
+            llm=self.llm_backend,
+            ollama_model=os.environ.get("UI_MODEL"),
+        )
 
     def run_goal_async(self, goal: str):
         if self.goal_status["running"]:
@@ -261,6 +266,21 @@ app.mount("/assets", StaticFiles(directory=str(web_root)), name="assets")
 _three_vendor_ok, _three_vendor_msg = ensure_three_vendor(web_root)
 
 
+def _warmup_ollama_background():
+    backend = (session.llm_backend or "ollama").lower()
+    if backend not in ("ollama", "local"):
+        return
+    try:
+        from agent.ollama_agent import check_ollama_ready, warmup_ollama
+
+        model = os.environ.get("UI_MODEL")
+        check_ollama_ready(model)
+        msg = warmup_ollama(model)
+        print(f"[ui] Ollama warmup: {msg}")
+    except Exception as e:
+        print(f"[ui] Ollama warmup skipped: {e}")
+
+
 @app.on_event("startup")
 def _startup():
     global _three_vendor_ok, _three_vendor_msg
@@ -268,6 +288,7 @@ def _startup():
     _three_vendor_ok, _three_vendor_msg = ok, msg
     print(f"[ui] {msg}")
     session.connect()
+    threading.Thread(target=_warmup_ollama_background, daemon=True).start()
 
 
 @app.on_event("shutdown")
@@ -367,7 +388,8 @@ async def ws_telemetry(ws: WebSocket):
         while True:
             payload = await asyncio.to_thread(session.telemetry_payload)
             await ws.send_json(payload)
-            await asyncio.sleep(0.5)
+            delay = 1.0 if getattr(session.robot, "motion_busy", False) else 0.5
+            await asyncio.sleep(delay)
     except WebSocketDisconnect:
         return
     except Exception as e:

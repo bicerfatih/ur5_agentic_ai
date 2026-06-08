@@ -62,7 +62,14 @@ class UR5Driver(RobotDriver):
         self._last_output_readback: dict = {}
         self._robotiq: RobotiqGripperClient | None = None
         self._loaded_program: str | None = None
-        self._rtde_lock = threading.Lock()
+        self._rtde_lock = threading.RLock()
+        self._motion_busy = False
+        self._cached_state: dict | None = None
+        self._receive_needs_restart = False
+
+    @property
+    def motion_busy(self) -> bool:
+        return self._motion_busy
 
     @property
     def arm_model(self) -> str:
@@ -227,30 +234,75 @@ class UR5Driver(RobotDriver):
         if hasattr(self.rtde_r, "isConnected") and not self.rtde_r.isConnected():
             self._restart_receive()
 
+    @staticmethod
+    def _is_transient_rtde_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "end of file" in msg
+            or "asio" in msg
+            or "connection" in msg
+            or "broken pipe" in msg
+            or "reset by peer" in msg
+            or "nonetype" in msg
+        )
+
     def _receive_call(self, read_fn):
-        """Read RTDE state; reconnect once if the receive socket dropped."""
-        last_err = None
-        for attempt in range(2):
-            try:
-                self._ensure_receive()
-                return read_fn()
-            except Exception as e:
-                last_err = e
-                msg = str(e).lower()
-                transient = (
-                    "end of file" in msg
-                    or "asio" in msg
-                    or "connection" in msg
-                    or "broken pipe" in msg
-                    or "reset by peer" in msg
-                )
-                if attempt == 0 and transient:
-                    print(f"  RTDE receive dropped, reconnecting: {e}")
-                    with self._rtde_lock:
+        """Read RTDE state under lock; reconnect receive if the socket dropped."""
+        with self._rtde_lock:
+            last_err = None
+            for attempt in range(3):
+                try:
+                    self._ensure_receive()
+                    if self.rtde_r is None:
+                        raise RuntimeError("RTDE receive not connected")
+                    return read_fn()
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2 and self._is_transient_rtde_error(e):
+                        if self._motion_busy:
+                            self._receive_needs_restart = True
+                            raise RuntimeError(f"RTDE receive error during motion: {e}") from e
+                        print(f"  RTDE receive dropped, reconnecting: {e}")
                         self._restart_receive()
-                    continue
-                raise
-        raise last_err
+                        time.sleep(0.12)
+                        continue
+                    raise
+            raise last_err or RuntimeError("RTDE receive read failed")
+
+    def _sync_receive_locked(self, frames: int = 2) -> None:
+        """Advance RTDE receive buffer so getActualTCPPose is current."""
+        self._ensure_receive()
+        for _ in range(max(1, frames)):
+            if self.rtde_r and hasattr(self.rtde_r, "waitForPeriod"):
+                try:
+                    self.rtde_r.waitForPeriod()
+                except Exception:
+                    time.sleep(0.008)
+            else:
+                time.sleep(0.008)
+
+    def _read_tcp_pose_locked(self) -> list:
+        """Fresh TCP pose for motion; caller must hold _rtde_lock."""
+        self._ensure_receive()
+        if self.rtde_r is None:
+            raise RuntimeError("RTDE receive not connected")
+        self._sync_receive_locked(2)
+        return list(self.rtde_r.getActualTCPPose())
+
+    def _finish_motion_rtde(self) -> None:
+        """Reconnect receive after motion if needed; refresh cached telemetry."""
+        if self._receive_needs_restart:
+            with self._rtde_lock:
+                try:
+                    self._restart_receive()
+                except Exception as e:
+                    print(f"  RTDE receive reconnect after motion failed: {e}")
+                finally:
+                    self._receive_needs_restart = False
+        try:
+            self._cached_state = self._snapshot_state()
+        except Exception:
+            pass
 
     def _restart_receive(self):
         if self.rtde_r:
@@ -263,21 +315,8 @@ class UR5Driver(RobotDriver):
         time.sleep(0.06)
 
     def _fresh_tcp_pose(self) -> list:
-        """New RTDE receive snapshot so repeated relative moves stack correctly."""
-        self._restart_receive()
-        pose = None
-        for _ in range(12):
-            if hasattr(self.rtde_r, "waitForPeriod"):
-                try:
-                    self.rtde_r.waitForPeriod()
-                except Exception:
-                    time.sleep(0.008)
-            else:
-                time.sleep(0.02)
-            pose = list(self.rtde_r.getActualTCPPose())
-        if pose is None:
-            raise RuntimeError("Could not read TCP pose from RTDE receive.")
-        return pose
+        """TCP pose for relative moves (must not restart receive mid-motion)."""
+        return self._receive_call(lambda: list(self.rtde_r.getActualTCPPose()))
 
     def _ensure_control(self):
         if not self.rtde_c or not self.rtde_c.isConnected():
@@ -304,10 +343,9 @@ class UR5Driver(RobotDriver):
         )
 
     def get_tcp_pose(self) -> list:
-        with self._rtde_lock:
-            return self._receive_call(
-                lambda: [round(v, 4) for v in self.rtde_r.getActualTCPPose()],
-            )
+        return self._receive_call(
+            lambda: [round(v, 4) for v in self.rtde_r.getActualTCPPose()],
+        )
 
     def get_tcp_force(self) -> list:
         return self._receive_call(
@@ -320,12 +358,67 @@ class UR5Driver(RobotDriver):
     def get_safety_mode(self) -> int:
         return self._receive_call(lambda: self.rtde_r.getSafetyMode())
 
+    def _rtde_control_state(self) -> dict:
+        rtde_ok = bool(self.rtde_c and self.rtde_c.isConnected())
+        return {
+            "connected": rtde_ok,
+            "motion_enabled": rtde_ok,
+            "hint": (
+                None
+                if rtde_ok
+                else (
+                    "Motion disabled: RTDE control not connected. On pendant run External Control "
+                    "(mode 7). Stop other RTDE clients. If 'registers in use', disable "
+                    "EtherNet/IP / PROFINET / MODBUS on the robot, then use reconnect_rtde_control."
+                )
+            ),
+        }
+
+    def _snapshot_state(self) -> dict:
+        """Single RTDE receive read for all telemetry fields."""
+        snap = self._receive_call(
+            lambda: {
+                "joint_positions_rad": [
+                    round(v, 4) for v in self.rtde_r.getActualQ()
+                ],
+                "tcp_pose": [round(v, 4) for v in self.rtde_r.getActualTCPPose()],
+                "tcp_force": [round(v, 4) for v in self.rtde_r.getActualTCPForce()],
+                "robot_mode": self.rtde_r.getRobotMode(),
+                "safety_mode": self.rtde_r.getSafetyMode(),
+            }
+        )
+        state = {
+            "arm_model": self.arm_model,
+            "simulated": self.is_simulated,
+            **snap,
+            "joint_positions_deg": [
+                round(math.degrees(v), 2) for v in snap["joint_positions_rad"]
+            ],
+            "host": self.host,
+            "rtde_control": self._rtde_control_state(),
+        }
+        if hasattr(self, "get_gripper_state"):
+            state["gripper"] = self.get_gripper_state()
+        if hasattr(self, "get_program_state"):
+            state["urp_program"] = self.get_program_state()
+        return state
+
     def get_full_state(self) -> dict:
-        state = super().get_full_state()
-        state["joint_positions_deg"] = [
-            round(math.degrees(v), 2) for v in self._receive_call(lambda: self.rtde_r.getActualQ())
-        ]
-        state["host"] = self.host
+        if self._motion_busy:
+            if self._cached_state:
+                cached = dict(self._cached_state)
+                cached["telemetry_stale"] = True
+                cached["motion_in_progress"] = True
+                return cached
+            return {
+                "arm_model": self.arm_model,
+                "simulated": self.is_simulated,
+                "motion_in_progress": True,
+                "telemetry_stale": True,
+                "rtde_control": self._rtde_control_state(),
+            }
+        state = self._snapshot_state()
+        self._cached_state = state
         return state
 
     def move_joint(self, joints: list, speed: float = 0.3, accel: float = 0.3):
@@ -334,22 +427,35 @@ class UR5Driver(RobotDriver):
         accel = min(accel, MAX_JOINT_ACCEL)
         self.rtde_c.moveJ(joints, speed, accel)
 
-    def _poll_tcp_motion(self, start: list, target: list, timeout: float = 4.0) -> dict:
-        """Poll fresh RTDE receive after moveL (does not raise)."""
-        with self._rtde_lock:
-            self._restart_receive()
-            commanded = sum((target[i] - start[i]) ** 2 for i in range(3)) ** 0.5
-            best = 0.0
-            deadline = time.time() + timeout
-            while time.time() < deadline:
+    def _poll_tcp_motion_locked(self, start: list, target: list, timeout: float = 6.0) -> dict:
+        """Poll TCP after moveL. Caller must hold _rtde_lock; never reconnects receive."""
+        commanded = sum((target[i] - start[i]) ** 2 for i in range(3)) ** 0.5
+        best = 0.0
+        final = list(start)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                self._sync_receive_locked(1)
                 actual = list(self.rtde_r.getActualTCPPose())
-                achieved = sum((actual[i] - start[i]) ** 2 for i in range(3)) ** 0.5
-                best = max(best, achieved)
-                err = max(abs(actual[i] - target[i]) for i in range(3))
-                if commanded >= 0.001 and (err <= 0.02 or achieved >= commanded * 0.85):
-                    break
-                time.sleep(0.08)
+            except Exception:
+                time.sleep(0.06)
+                continue
+            achieved = sum((actual[i] - start[i]) ** 2 for i in range(3)) ** 0.5
+            best = max(best, achieved)
+            final = actual
+            err = max(abs(actual[i] - target[i]) for i in range(3))
+            if commanded >= 0.001 and (err <= 0.006 or achieved >= commanded * 0.85):
+                break
+            time.sleep(0.06)
+        try:
+            self._sync_receive_locked(1)
             final = list(self.rtde_r.getActualTCPPose())
+            best = max(
+                best,
+                sum((final[i] - start[i]) ** 2 for i in range(3)) ** 0.5,
+            )
+        except Exception:
+            pass
         return {
             "commanded_m": round(commanded, 4),
             "achieved_m": round(best, 4),
@@ -357,13 +463,19 @@ class UR5Driver(RobotDriver):
         }
 
     def move_linear(self, tcp_pose: list, speed: float = 0.1, accel: float = 0.1) -> dict:
-        with self._rtde_lock:
-            start = self._fresh_tcp_pose()
-        return self._move_linear_from(start, tcp_pose, speed, accel)
+        self._motion_busy = True
+        try:
+            with self._rtde_lock:
+                start = self._read_tcp_pose_locked()
+                return self._move_linear_from_locked(start, tcp_pose, speed, accel)
+        finally:
+            self._motion_busy = False
+            self._finish_motion_rtde()
 
-    def _move_linear_from(
+    def _move_linear_from_locked(
         self, start: list, tcp_pose: list, speed: float = 0.1, accel: float = 0.1
     ) -> dict:
+        """Execute moveL + poll. Caller must hold _rtde_lock."""
         self._ensure_control()
         speed = min(speed, MAX_LINEAR_SPEED)
         accel = min(accel, MAX_LINEAR_ACCEL)
@@ -377,7 +489,13 @@ class UR5Driver(RobotDriver):
                 "moveL rejected by the controller. On the pendant: start External Control "
                 "(robot_mode must be 7) and ensure no other RTDE client holds control."
             )
-        return self._poll_tcp_motion(start, tcp_pose)
+        return self._poll_tcp_motion_locked(start, tcp_pose)
+
+    def _move_linear_from(
+        self, start: list, tcp_pose: list, speed: float = 0.1, accel: float = 0.1
+    ) -> dict:
+        with self._rtde_lock:
+            return self._move_linear_from_locked(start, tcp_pose, speed, accel)
 
     def move_home(self):
         self.move_joint(HOME_JOINTS, speed=0.3, accel=0.3)
@@ -390,17 +508,34 @@ class UR5Driver(RobotDriver):
         self, dx=0.0, dy=0.0, dz=0.0, speed: float = 0.15, accel: float = 0.15
     ) -> dict:
         """Translate in robot BASE frame (x,y,z); keep current TCP orientation."""
-        with self._rtde_lock:
-            before = self._fresh_tcp_pose()
-            target = [
-                before[0] + dx,
-                before[1] + dy,
-                before[2] + dz,
-                before[3],
-                before[4],
-                before[5],
-            ]
-        return self._move_linear_from(before, target, speed, accel)
+        self._motion_busy = True
+        try:
+            with self._rtde_lock:
+                before = self._read_tcp_pose_locked()
+                target = [
+                    before[0] + dx,
+                    before[1] + dy,
+                    before[2] + dz,
+                    before[3],
+                    before[4],
+                    before[5],
+                ]
+                commanded = sum((target[i] - before[i]) ** 2 for i in range(3)) ** 0.5
+                if commanded < 0.0005:
+                    self._sync_receive_locked(4)
+                    before = list(self.rtde_r.getActualTCPPose())
+                    target = [
+                        before[0] + dx,
+                        before[1] + dy,
+                        before[2] + dz,
+                        before[3],
+                        before[4],
+                        before[5],
+                    ]
+                return self._move_linear_from_locked(before, target, speed, accel)
+        finally:
+            self._motion_busy = False
+            self._finish_motion_rtde()
 
     # ── Gripper: commands on digital OUT, feedback on DI 2 & 3 ──
 
@@ -460,16 +595,24 @@ class UR5Driver(RobotDriver):
         return bool(self.rtde_c.sendCustomScriptFunction(name, script))
 
     def _read_cmd_outputs(self, open_pin: int, close_pin: int) -> dict:
-        self._ensure_receive()
-        return {
-            f"do{open_pin}": bool(self.rtde_r.getDigitalOutState(self._out_read_pin(open_pin))),
-            f"do{close_pin}": bool(self.rtde_r.getDigitalOutState(self._out_read_pin(close_pin))),
-        }
+        if self._motion_busy:
+            return dict(self._last_output_readback)
+        return self._receive_call(
+            lambda: {
+                f"do{open_pin}": bool(
+                    self.rtde_r.getDigitalOutState(self._out_read_pin(open_pin))
+                ),
+                f"do{close_pin}": bool(
+                    self.rtde_r.getDigitalOutState(self._out_read_pin(close_pin))
+                ),
+            }
+        )
 
     def _read_digital_in(self, pin: int) -> bool | None:
+        if self._motion_busy:
+            return None
         try:
-            self._ensure_receive()
-            return bool(self.rtde_r.getDigitalInState(pin))
+            return self._receive_call(lambda: bool(self.rtde_r.getDigitalInState(pin)))
         except Exception:
             return None
 

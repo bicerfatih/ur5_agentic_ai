@@ -100,9 +100,17 @@ class MockDriver(RobotDriver):
         self, dx=0.0, dy=0.0, dz=0.0, speed: float = 0.1, accel: float = 0.1
     ):
         self._record("move_tcp_relative", dx=dx, dy=dy, dz=dz, speed=speed, accel=accel)
+        start = list(self._tcp)
         self._tcp[0] += dx
         self._tcp[1] += dy
         self._tcp[2] += dz
+        commanded = (dx * dx + dy * dy + dz * dz) ** 0.5
+        return {
+            "commanded_m": round(commanded, 4),
+            "achieved_m": round(commanded, 4),
+            "final_tcp": [round(v, 4) for v in self._tcp],
+            "start_tcp": [round(v, 4) for v in start],
+        }
 
     def gripper_open(self):
         self._record("gripper_open")

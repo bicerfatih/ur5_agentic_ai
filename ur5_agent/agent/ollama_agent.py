@@ -2,22 +2,71 @@
 
 import json
 import os
+import time
 
 from ollama import Client
 
 from agent.base_agent import BaseRobotAgent
 from agent.schemas import ollama_tools
-from config.settings import OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_NUM_PREDICT
+from agent.tool_text import recover_tool_calls_from_text
+from config.settings import (
+    OLLAMA_HOST,
+    OLLAMA_KEEP_ALIVE,
+    OLLAMA_MODEL,
+    OLLAMA_NUM_CTX,
+    OLLAMA_NUM_PREDICT,
+    OLLAMA_WARMUP_ENABLED,
+)
 from config.sites import SiteProfile
 from robot.base import RobotDriver
 
 OLLAMA_AGENT_HINT = (
     "You control a real robot via tools. "
+    "Always invoke tools through the tool-calling API — never write move_left(0.05) as plain text. "
     "Use get_robot_state before any motion. "
+    "Left/right use move_left and move_right (base Y); up/down use move_up and move_down (base Z). "
     "You may call multiple tools across turns until the task is done. "
     "If the user repeats a move request, execute the motion tool again every time. "
-    "After two failed motion tools, stop and report — do not keep trying smaller moves."
+    "You cannot call move_home, move_joint, release_rtde_control, or run_urp_program. "
+    "On errors, stop and explain — never try to home the robot. "
+    "After two failed motion tools, stop and report — do not keep trying smaller moves. "
+    "Be brief: one short sentence before each tool call; minimal final summary."
 )
+
+
+def ollama_runtime_options(num_predict: int | None = None) -> dict:
+    opts: dict = {"num_predict": num_predict if num_predict is not None else OLLAMA_NUM_PREDICT}
+    if OLLAMA_NUM_CTX > 0:
+        opts["num_ctx"] = OLLAMA_NUM_CTX
+    return opts
+
+
+def _keep_alive_value():
+    raw = (OLLAMA_KEEP_ALIVE or "").strip()
+    if not raw or raw.lower() in ("0", "false", "off", "none"):
+        return None
+    if raw == "-1":
+        return -1
+    return raw
+
+
+def warmup_ollama(model: str | None = None) -> str:
+    """Load model into Ollama so the first Agentic AI goal is faster."""
+    if not OLLAMA_WARMUP_ENABLED:
+        return "disabled (OLLAMA_WARMUP_ENABLED=0)"
+    model = model or OLLAMA_MODEL
+    client = Client(host=OLLAMA_HOST)
+    t0 = time.time()
+    kwargs: dict = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with exactly: ok"}],
+        "options": ollama_runtime_options(num_predict=8),
+    }
+    keep_alive = _keep_alive_value()
+    if keep_alive is not None:
+        kwargs["keep_alive"] = keep_alive
+    client.chat(**kwargs)
+    return f"{model} ready in {time.time() - t0:.1f}s (keep_alive={OLLAMA_KEEP_ALIVE})"
 
 
 class OllamaRobotAgent(BaseRobotAgent):
@@ -38,16 +87,25 @@ class OllamaRobotAgent(BaseRobotAgent):
         ]
 
     def _llm_step(self, messages: list) -> tuple[str | None, list, bool]:
-        response = self.client.chat(
-            model=self.model,
-            messages=messages,
-            tools=self.tools,
-            options={"num_predict": OLLAMA_NUM_PREDICT},
-        )
+        kwargs: dict = {
+            "model": self.model,
+            "messages": messages,
+            "tools": self.tools,
+            "options": ollama_runtime_options(),
+        }
+        keep_alive = _keep_alive_value()
+        if keep_alive is not None:
+            kwargs["keep_alive"] = keep_alive
+        response = self.client.chat(**kwargs)
         msg = response.message
         self._last_message = msg
         text = (msg.content or "").strip() or None
         tool_calls = self._parse_tool_calls(msg)
+        if not tool_calls and text:
+            tool_calls = recover_tool_calls_from_text(text)
+            if tool_calls:
+                names = ", ".join(c["name"] for c in tool_calls)
+                print(f"  [ollama] recovered tool call(s) from text: {names}")
         is_final = not tool_calls
         return text, tool_calls, is_final
 

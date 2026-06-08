@@ -105,6 +105,14 @@ def _motion_result(requested_m: float, motion_report: dict | None) -> dict:
         out["final_tcp"] = motion_report.get("final_tcp") or []
     else:
         out["final_tcp"] = []
+    commanded = float(out.get("commanded_m") or requested_m)
+    achieved = float(out.get("achieved_m") or 0.0)
+    if commanded >= 0.003 and achieved < commanded * 0.35:
+        out["status"] = "error"
+        out["reason"] = (
+            f"Robot moved only {achieved * 100:.1f} cm of {commanded * 100:.1f} cm "
+            "(controller skipped move or stale pose). Call get_robot_state and retry."
+        )
     return out
 
 
@@ -114,6 +122,11 @@ def _move_along_axis(robot: RobotDriver, tool_name: str, axis: tuple[float, floa
     print(f"  [TOOL] {tool_name} {d * 100:.1f}cm  (base Δ [{dx:.3f}, {dy:.3f}, {dz:.3f}])")
     report = robot.move_tcp_relative(dx=dx, dy=dy, dz=dz)
     result = _motion_result(d, report)
+    if result.get("status") == "error":
+        print(f"  [WARN] {tool_name} under-move — retrying once after settle")
+        time.sleep(0.2)
+        report = robot.move_tcp_relative(dx=dx, dy=dy, dz=dz)
+        result = _motion_result(d, report)
     result["base_delta"] = [round(dx, 4), round(dy, 4), round(dz, 4)]
     return result
 
@@ -346,6 +359,7 @@ def execute_tool(
     inputs: dict,
     robot: RobotDriver,
     policy: PolicyEngine,
+    caller: str = "ui",
 ) -> dict:
     if (
         name in MOTION_TOOLS
@@ -354,7 +368,7 @@ def execute_tool(
     ):
         get_robot_state(robot, policy)
 
-    block = policy.validate_before_move(robot, name, inputs)
+    block = policy.validate_before_move(robot, name, inputs, caller=caller)
     if block:
         print(f"  [POLICY] blocked: {block['reason']}")
         return block
@@ -404,7 +418,10 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "move_home",
-        "description": "Move to safe home. Use when position is unknown.",
+        "description": (
+            "Move to taught home joint pose. ONLY when the operator explicitly asks "
+            "to go home — never for error recovery or unclear commands."
+        ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
