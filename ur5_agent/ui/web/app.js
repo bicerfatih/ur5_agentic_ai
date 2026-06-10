@@ -129,6 +129,9 @@ function renderState(payload) {
     renderDetectionLabels(payload.detection);
   }
   const gs = payload.goal_status || {};
+  if (typeof window.onAgentGoalStatus === "function") {
+    window.onAgentGoalStatus(gs);
+  }
   if (gs.running) {
     goalStatusEl.textContent = `Running: ${gs.goal || ""} (check terminal for live tool output)`;
   } else if (gs.error) {
@@ -238,11 +241,11 @@ detectToggle.addEventListener("click", () => {
   }
 });
 
-$("run-goal").addEventListener("click", async () => {
-  const goal = $("goal-input").value.trim();
+async function submitAgentGoal(goalText) {
+  const goal = (goalText ?? $("goal-input").value).trim();
   if (!goal) {
     goalStatusEl.textContent = "Goal is empty.";
-    return;
+    return { ok: false, reason: "empty" };
   }
   goalStatusEl.textContent = "Submitting goal...";
   const res = await fetch("/api/goal", {
@@ -253,10 +256,15 @@ $("run-goal").addEventListener("click", async () => {
   const body = await res.json();
   if (!res.ok) {
     goalStatusEl.textContent = body.detail || "Failed to submit goal.";
-    return;
+    return { ok: false, reason: body.detail };
   }
   goalStatusEl.textContent = `Accepted: ${goal}`;
-});
+  return { ok: true, goal };
+}
+
+window.submitAgentGoal = submitAgentGoal;
+
+$("run-goal").addEventListener("click", () => submitAgentGoal());
 
 async function pullTelemetry(site) {
   try {
@@ -324,6 +332,10 @@ async function init() {
   connectTelemetryWs(site);
 
   setLiveFeed(true);
+
+  if (typeof window.initSpeechTask === "function") {
+    await window.initSpeechTask();
+  }
 }
 
 function loadThreeJs(timeoutMs = 15000) {

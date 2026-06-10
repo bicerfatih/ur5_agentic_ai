@@ -65,6 +65,15 @@ AGENT_ALLOW_MOVE_HOME = os.environ.get("AGENT_ALLOW_MOVE_HOME", "false").lower()
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 CLAUDE_MAX_TOKENS = int(os.environ.get("CLAUDE_MAX_TOKENS", "1024"))
 
+# ── Speech-to-task (voice goals) ───────────────────────
+# Record mode uploads audio to /api/speech/transcribe (local Whisper and/or OpenAI).
+SPEECH_CLOUD_STT = os.environ.get("SPEECH_CLOUD_STT", "auto").strip().lower()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_WHISPER_MODEL = os.environ.get("OPENAI_WHISPER_MODEL", "whisper-1").strip()
+# Local faster-whisper on Jetson (no Google browser STT). Set empty to disable.
+# small: best accuracy/speed tradeoff on Jetson CPU (tiny hallucinates, base still weak)
+SPEECH_LOCAL_WHISPER_MODEL = os.environ.get("SPEECH_LOCAL_WHISPER_MODEL", "small").strip()
+
 # ── Gripper ────────────────────────────────────────────
 # Robotiq URCap: PolyScope gripper ID 1 → socket SID 9 (port 63352)
 GRIPPER_TYPE = os.environ.get("GRIPPER_TYPE", "robotiq")  # robotiq | dual_pin | digital_io | none

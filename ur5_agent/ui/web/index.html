@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>EMiRO · Robot Ops Console</title>
   <link rel="icon" href="/assets/emiro-logo.png" type="image/png" />
-  <link rel="stylesheet" href="/assets/styles.css?v=6" />
+  <link rel="stylesheet" href="/assets/styles.css?v=UI_BUILD_ID" />
 </head>
 <body>
   <div class="bg-grid"></div>
@@ -34,6 +34,37 @@
   </header>
 
   <main class="grid">
+    <section class="panel goal" id="agent-goal-panel">
+      <h2>Agentic AI <span class="ui-voice-badge">Voice ON</span> <span class="ui-build-tag" id="ui-build-tag"></span></h2>
+      <div class="row">
+        <textarea id="goal-input" rows="3" placeholder="Type or speak: e.g. go down 2 centimeters, move left 5 cm"></textarea>
+      </div>
+      <div class="goal-actions" id="goal-actions-row">
+        <button
+          type="button"
+          id="speech-talk-btn"
+          class="speech-talk speech-talk-trigger btn-mic"
+          aria-pressed="false"
+          title="Click to start recording, click again to stop and transcribe"
+        >MIC — Click to record</button>
+        <button type="button" id="run-goal" class="primary btn-run">Run</button>
+      </div>
+      <div class="speech-row speech-options">
+        <select id="speech-mic-select" aria-label="Microphone">
+          <option value="">Default microphone</option>
+        </select>
+        <button type="button" id="speech-mic-refresh" class="chip">Refresh mics</button>
+        <button type="button" id="speech-mode-record" class="chip active">Record</button>
+        <button type="button" id="speech-mode-browser" class="chip" title="Often fails on Chromium Ubuntu (network error)">Browser</button>
+        <label class="speech-check"><input type="checkbox" id="speech-auto-run" /> Talk &amp; Run</label>
+        <label class="speech-check"><input type="checkbox" id="speech-speak-replies" checked /> Voice replies</label>
+      </div>
+      <p class="small speech-hint" id="speech-mode-hint">Click MIC → speak your command → click STOP → press Run.</p>
+      <p id="speech-interim" class="speech-interim" aria-live="polite"></p>
+      <p id="speech-status" class="small speech-status" aria-live="polite">Click Refresh mics and allow microphone access.</p>
+      <div id="goal-status" class="small">No goal submitted.</div>
+    </section>
+
     <section class="panel twin">
       <h2>Digital Twin</h2>
       <div class="twin-viewport">
@@ -54,15 +85,6 @@
       <img id="camera-preview" alt="Live camera feed" />
       <div id="camera-hint" class="small">Starting live feed…</div>
       <div id="detected-labels" class="detected-summary">Detected: —</div>
-    </section>
-
-    <section class="panel goal">
-      <h2>Agentic AI</h2>
-      <div class="row">
-        <textarea id="goal-input" rows="3" placeholder="e.g. read state, then move down 2 centimeters (use Agentic AI — not tool buttons)"></textarea>
-      </div>
-      <button id="run-goal">Run</button>
-      <div id="goal-status" class="small">No goal submitted.</div>
     </section>
 
     <section class="panel telemetry">
@@ -100,6 +122,7 @@
 
   <script src="/assets/vendor/three.min.js"></script>
   <script src="/assets/twin.js?v=12"></script>
-  <script src="/assets/app.js?v=5"></script>
+  <script src="/assets/speech.js?v=UI_BUILD_ID"></script>
+  <script src="/assets/app.js?v=UI_BUILD_ID"></script>
 </body>
 </html>

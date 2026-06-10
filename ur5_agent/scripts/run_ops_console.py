@@ -11,7 +11,7 @@ import uvicorn
 
 def main():
     host = os.environ.get("UI_BIND_HOST", "0.0.0.0")
-    port = int(os.environ.get("UI_PORT", "8787"))
+    port = int(os.environ.get("UI_PORT", "8788"))
     print(f"Starting Robot Ops Console on http://{host}:{port}")
     print("Tip: export UI_DRY_RUN=1 for mock mode")
     print("Tip: faster Agentic AI → OLLAMA_MODEL=qwen2.5:3b UI_MODEL=qwen2.5:3b")

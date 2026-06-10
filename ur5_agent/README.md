@@ -89,6 +89,23 @@ python3 main.py --llm claude --robot ur5 --site lab
 
 Environment overrides: `LLM_BACKEND`, `OLLAMA_MODEL`, `OLLAMA_HOST`, `OLLAMA_KEEP_ALIVE` (default `30m`), `OLLAMA_WARMUP_ENABLED`, `OLLAMA_NUM_PREDICT`, `ROBOT_TYPE`, `SITE_ID`, `DRY_RUN=1`, `ROBOT_HOST`. Ops console warms Ollama on startup for faster first Agentic AI goal.
 
+### Voice goals (speech-to-task)
+
+The Ops Console **Agentic AI** panel supports **Hold to Talk** (Jabra USB speaker/mic works well).
+
+| Mode | How it works |
+|------|----------------|
+| **Browser STT** | Chrome/Edge Web Speech API — set Jabra as default input in Linux sound settings |
+| **Cloud Whisper** | Records from selected mic → OpenAI Whisper API — set `OPENAI_API_KEY` |
+
+```bash
+export OPENAI_API_KEY=sk-...          # optional, for Cloud Whisper mode
+export SPEECH_CLOUD_STT=openai
+UI_PORT=8788 python3 scripts/run_ops_console.py
+```
+
+Open `http://localhost:8788`, allow microphone, click **Refresh mics**, pick **Jabra**, hold **Talk**, say e.g. *“go down two centimeters”*. With **Talk & Run** checked, the goal submits automatically.
+
 ## Example goals
 
 - `read state then move up 5 centimeters`

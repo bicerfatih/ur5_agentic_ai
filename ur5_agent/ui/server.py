@@ -11,10 +11,12 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -25,6 +27,7 @@ from policy.safety import PolicyEngine
 from robot.factory import create_robot
 from robot.tools import TOOL_SCHEMAS, execute_tool
 from camera import ObjectDetector, RealSenseCamera
+from speech.transcribe import speech_config, transcribe_audio
 
 _UI_ROOT = Path(__file__).resolve().parent
 if str(_UI_ROOT) not in sys.path:
@@ -251,6 +254,20 @@ class RobotSession:
         }
 
 
+class _NoCacheWebAssetsMiddleware(BaseHTTPMiddleware):
+    """Prevent stale app.js / speech.js when UI updates."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/assets/") and (
+            path.endswith(".js") or path.endswith(".css") or path.endswith(".html")
+        ):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+
 app = FastAPI(title="Robot Ops Console")
 app.add_middleware(
     CORSMiddleware,
@@ -259,11 +276,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(_NoCacheWebAssetsMiddleware)
 
 session = RobotSession()
 web_root = Path(__file__).resolve().parent / "web"
 app.mount("/assets", StaticFiles(directory=str(web_root)), name="assets")
 _three_vendor_ok, _three_vendor_msg = ensure_three_vendor(web_root)
+
+
+def _warmup_whisper_background():
+    try:
+        from speech.transcribe import warmup_local_whisper
+
+        msg = warmup_local_whisper()
+        print(f"[ui] Whisper warmup: {msg}")
+    except Exception as e:
+        print(f"[ui] Whisper warmup skipped: {e}")
 
 
 def _warmup_ollama_background():
@@ -281,14 +309,42 @@ def _warmup_ollama_background():
         print(f"[ui] Ollama warmup skipped: {e}")
 
 
+def _print_ready_banner():
+    port = int(os.environ.get("UI_PORT", "8788"))
+    print(
+        f"\n[ui] Console READY — open http://127.0.0.1:{port}/ in your browser.\n"
+        "[ui] (Idle now — no more logs until you use the UI. Ctrl+C to stop.)\n",
+        flush=True,
+    )
+
+
+def _warmup_all_background():
+    threads = [
+        threading.Thread(target=_warmup_whisper_background, daemon=True),
+        threading.Thread(target=_warmup_ollama_background, daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    _print_ready_banner()
+
+
+def _connect_robot_background():
+    try:
+        session.connect()
+    except Exception as e:
+        print(f"[ui] Robot connect failed — UI still works in dry-run / gripper-only: {e}", flush=True)
+
+
 @app.on_event("startup")
 def _startup():
     global _three_vendor_ok, _three_vendor_msg
     ok, msg = ensure_three_vendor(web_root)
     _three_vendor_ok, _three_vendor_msg = ok, msg
     print(f"[ui] {msg}")
-    session.connect()
-    threading.Thread(target=_warmup_ollama_background, daemon=True).start()
+    threading.Thread(target=_connect_robot_background, daemon=True).start()
+    threading.Thread(target=_warmup_all_background, daemon=True).start()
 
 
 @app.on_event("shutdown")
@@ -296,9 +352,22 @@ def _shutdown():
     session.disconnect()
 
 
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+}
+
+
 @app.get("/")
 def index():
-    return FileResponse(str(web_root / "index.html"))
+    build = str(int(time.time()))
+    html = (web_root / "index.html").read_text(encoding="utf-8")
+    html = html.replace("UI_BUILD_ID", build)
+    html = html.replace(
+        'id="ui-build-tag"></span>',
+        f'id="ui-build-tag">build {build}</span>',
+    )
+    return HTMLResponse(content=html, headers=_NO_CACHE_HEADERS)
 
 
 @app.get("/api/config")
@@ -310,6 +379,7 @@ def api_config():
         "arm_model": session.robot.arm_model,
         "simulated": session.robot.is_simulated,
         "llm_backend": session.llm_backend,
+        "speech": speech_config(),
         "three_js": {
             "ready": _three_vendor_ok,
             "path": str(three_vendor_path(web_root)),
@@ -354,6 +424,24 @@ def api_goal(call: GoalCall):
 @app.get("/api/goal_status")
 def api_goal_status():
     return session.goal_status
+
+
+@app.get("/api/speech/config")
+def api_speech_config():
+    return speech_config()
+
+
+@app.post("/api/speech/transcribe")
+async def api_speech_transcribe(audio: UploadFile = File(...)):
+    try:
+        data = await audio.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read audio: {e}") from e
+    filename = audio.filename or "speech.webm"
+    result = await asyncio.to_thread(transcribe_audio, data, filename=filename)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=503, detail=result.get("reason", "transcription failed"))
+    return result
 
 
 @app.get("/api/camera/latest")
