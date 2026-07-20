@@ -319,6 +319,19 @@ def _local_faster_whisper(audio_bytes: bytes, *, filename: str) -> str:
 
 
 def _openai_whisper(audio_bytes: bytes, *, filename: str) -> str:
+    # Decode to clean 16 kHz mono WAV first (same as the local path) so OpenAI
+    # never sees a corrupt/partial WebM blob, and so we can reject silent clips
+    # with a useful error instead of an empty transcript.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav_path = _audio_to_wav_path(audio_bytes, filename, tmpdir)
+        dur, rms = _wav_stats(wav_path)
+        if dur < 0.4:
+            raise RuntimeError(
+                f"Recording too short ({dur:.1f}s). Hold MIC at least 2 seconds while speaking."
+            )
+        with open(wav_path, "rb") as f:
+            wav_bytes = f.read()
+
     boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
     model = OPENAI_WHISPER_MODEL
 
@@ -326,14 +339,14 @@ def _openai_whisper(audio_bytes: bytes, *, filename: str) -> str:
     parts.append(f"--{boundary}\r\n".encode())
     parts.append(f'Content-Disposition: form-data; name="model"\r\n\r\n{model}\r\n'.encode())
     parts.append(f"--{boundary}\r\n".encode())
-    parts.append(
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
-    )
-    parts.append(b"Content-Type: application/octet-stream\r\n\r\n")
-    parts.append(audio_bytes)
-    parts.append(f"\r\n--{boundary}\r\n".encode())
     parts.append(b'Content-Disposition: form-data; name="language"\r\n\r\nen\r\n')
-    parts.append(f"--{boundary}--\r\n".encode())
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(
+        b'Content-Disposition: form-data; name="file"; filename="speech.wav"\r\n'
+    )
+    parts.append(b"Content-Type: audio/wav\r\n\r\n")
+    parts.append(wav_bytes)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
     body = b"".join(parts)
 
     req = Request(
@@ -356,5 +369,8 @@ def _openai_whisper(audio_bytes: bytes, *, filename: str) -> str:
 
     text = (payload.get("text") or "").strip()
     if not text:
-        raise RuntimeError("Whisper returned empty transcript.")
+        raise RuntimeError(
+            f"OpenAI returned empty transcript for {dur:.1f}s clip (RMS {rms:.0f}). "
+            "Speak louder / closer to the mic and hold MIC 2-3 seconds."
+        )
     return text

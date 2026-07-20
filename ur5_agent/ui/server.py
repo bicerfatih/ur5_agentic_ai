@@ -280,7 +280,10 @@ app.add_middleware(_NoCacheWebAssetsMiddleware)
 
 session = RobotSession()
 web_root = Path(__file__).resolve().parent / "web"
+repo_assets = Path(__file__).resolve().parents[2] / "assets"
 app.mount("/assets", StaticFiles(directory=str(web_root)), name="assets")
+if repo_assets.is_dir():
+    app.mount("/robot-assets", StaticFiles(directory=str(repo_assets)), name="robot-assets")
 _three_vendor_ok, _three_vendor_msg = ensure_three_vendor(web_root)
 
 

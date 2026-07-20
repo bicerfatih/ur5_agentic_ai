@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!-- Static lab cell props — import alongside ur5_robotiq in Isaac (Week 2). -->
+<robot name="lab_table" xmlns:xacro="http://wiki.ros.org/xacro">
+  <link name="table_link">
+    <visual>
+      <origin xyz="0.55 0 0.375" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.9 1.2 0.75"/>
+      </geometry>
+      <material name="table_gray">
+        <color rgba="0.45 0.45 0.48 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.55 0 0.375" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.9 1.2 0.75"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="world"/>
+  <joint name="world_table" type="fixed">
+    <parent link="world"/>
+    <child link="table_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>

@@ -1,4 +1,4 @@
-# policy/safety.py — site-aware motion policy (airport / Emirates rules)
+# policy/safety.py — site-aware motion policy (airport rules)
 
 from dataclasses import dataclass, field
 
@@ -10,6 +10,7 @@ from robot.base import RobotDriver
 MOTION_TOOLS = {
     "move_home",
     "move_joint",
+    "jog_joint",
     "move_linear",
     "move_up",
     "move_down",
@@ -17,6 +18,7 @@ MOTION_TOOLS = {
     "move_right",
     "move_forward",
     "move_backward",
+    "execute_rl_policy",
 }
 
 # UR robot modes: 7 = RUNNING; safety 1 = NORMAL
@@ -27,7 +29,7 @@ SAFETY_MODE_NORMAL = 1
 _HOME_JOINTS_DEG = [0.0, -90.0, 0.0, -90.0, 0.0, 0.0]
 
 _AGENT_BLOCKED_TOOLS = frozenset(
-    {"move_home", "move_joint", "release_rtde_control", "run_urp_program"}
+    {"move_home", "move_joint", "jog_joint", "release_rtde_control", "run_urp_program"}
 )
 
 

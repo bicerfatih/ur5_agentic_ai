@@ -16,7 +16,7 @@ MAX_JOINT_SPEED = 0.5
 MAX_JOINT_ACCEL = 0.5
 MAX_LINEAR_SPEED = 0.2
 MAX_LINEAR_ACCEL = 0.2
-MAX_SINGLE_MOVE_DOWN = 0.10
+MAX_SINGLE_MOVE_DOWN = 0.25
 
 # ── Semantic move directions (robot BASE frame, not tool frame) ──
 # Unit vectors as "dx,dy,dz". Override per cell if "right" / "down" feel wrong.
@@ -34,6 +34,10 @@ MOTION_RIGHT_VEC = _motion_vec("MOTION_RIGHT_VEC", "0,1,0")
 MOTION_LEFT_VEC = _motion_vec("MOTION_LEFT_VEC", "0,-1,0")
 MOTION_FORWARD_VEC = _motion_vec("MOTION_FORWARD_VEC", "1,0,0")
 MOTION_BACKWARD_VEC = _motion_vec("MOTION_BACKWARD_VEC", "-1,0,0")
+
+# Horizontal moves: "tool_horizontal" = left/right/forward/back along gripper axes
+# projected to the table plane (Z fixed); "base" = robot base X/Y only.
+MOTION_HORIZONTAL_MODE = os.environ.get("MOTION_HORIZONTAL_MODE", "tool_horizontal").strip().lower()
 
 # ── Safe home position (joint angles in radians) ───────
 HOME_JOINTS = [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0]
@@ -130,8 +134,43 @@ CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
 CAMERA_FPS = int(os.environ.get("CAMERA_FPS", "30"))
 CAMERA_OUTPUT_DIR = os.environ.get("CAMERA_OUTPUT_DIR", "../data/raw/images/lab")
+CAMERA_DEPTH_ENABLED = os.environ.get("CAMERA_DEPTH_ENABLED", "true").lower() in ("1", "true", "yes")
+HAND_EYE_CALIB_PATH = os.environ.get(
+    "HAND_EYE_CALIB_PATH",
+    os.path.join(os.path.dirname(__file__), "../../data/calibration/hand_eye.json"),
+)
+REACH_DONE_DIST_M = float(os.environ.get("REACH_DONE_DIST_M", "0.008"))
+REACH_APPROACH_OFFSET_M = os.environ.get("REACH_APPROACH_OFFSET_M", "0,0,0.05")
 
 # ── Vision (YOLO) ───────────────────────────────────────
 YOLO_ENABLED = os.environ.get("YOLO_ENABLED", "true").lower() in ("1", "true", "yes")
 YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "").strip()
 YOLO_CONF = float(os.environ.get("YOLO_CONF", "0.35"))
+
+# ── RL (camera-first policy execution) ──────────────────
+RL_POLICY_PATH = os.environ.get("RL_POLICY_PATH", "").strip()
+RL_OBS_MODE = os.environ.get("RL_OBS_MODE", "rgbd_state").strip()
+RL_CONTROL_DT = float(os.environ.get("RL_CONTROL_DT", "0.12"))
+
+# ── Isaac Sim bridge (GPU workstation) ─────────────────
+ISAAC_BRIDGE_HOST = os.environ.get("ISAAC_BRIDGE_HOST", "127.0.0.1").strip()
+ISAAC_BRIDGE_PORT = int(os.environ.get("ISAAC_BRIDGE_PORT", "9912"))
+ISAAC_USD_PATH = os.environ.get(
+    "ISAAC_USD_PATH",
+    os.path.join(os.path.dirname(__file__), "../../assets/usd/lab_cell.usda"),
+)
+SIM_BACKEND = os.environ.get("SIM_BACKEND", "local").strip()  # local | isaac
+
+# ── VLA (vision-language-action) ───────────────────────
+# tool_routed | openvla | pi0 | groot | disabled
+VLA_BACKEND = os.environ.get("VLA_BACKEND", "tool_routed").strip()
+VLA_INSTRUCTION_DEFAULT = os.environ.get("VLA_INSTRUCTION_DEFAULT", "reach the object carefully")
+VLA_MAX_STEP_M = float(os.environ.get("VLA_MAX_STEP_M", "0.008"))
+VLA_SERVER_URL = os.environ.get("VLA_SERVER_URL", "").strip()  # e.g. http://gpu-host:8000
+VLA_SERVER_TIMEOUT_S = float(os.environ.get("VLA_SERVER_TIMEOUT_S", "10.0"))
+# "ur5" = scripts/vla/serve_*.py protocol; "openvla_native" = official openvla deploy.py
+VLA_WIRE_FORMAT = os.environ.get("VLA_WIRE_FORMAT", "ur5").strip()
+# Dataset key for action un-normalization (OpenVLA), e.g. "bridge_orig"
+VLA_UNNORM_KEY = os.environ.get("VLA_UNNORM_KEY", "").strip()
+# Scale applied when the server returns normalized actions in [-1, 1]
+VLA_ACTION_SCALE_M = float(os.environ.get("VLA_ACTION_SCALE_M", "0.01"))

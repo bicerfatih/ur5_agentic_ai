@@ -1,0 +1,38 @@
+# RTDE getActualQ() index → URDF revolute joint name (Universal Robots ROS2 description)
+# Order matches PolyScope joints 1–6 and ur5_agent telemetry joint_positions_rad[].
+
+arm_model: ur5
+rtde_joint_order:
+  - index: 0
+    urdf_joint: shoulder_pan_joint
+    polyscope: "Base"
+  - index: 1
+    urdf_joint: shoulder_lift_joint
+    polyscope: "Shoulder"
+  - index: 2
+    urdf_joint: elbow_joint
+    polyscope: "Elbow"
+  - index: 3
+    urdf_joint: wrist_1_joint
+    polyscope: "Wrist 1"
+  - index: 4
+    urdf_joint: wrist_2_joint
+    polyscope: "Wrist 2"
+  - index: 5
+    urdf_joint: wrist_3_joint
+    polyscope: "Wrist 3"
+
+frames:
+  base: base_link
+  flange: flange
+  tool0: tool0          # UR standard tool frame (RTDE TCP parent)
+  gripper_base: robotiq_arg2f_base_link
+  gripper_tcp: gripper_tcp
+  camera: camera_link   # stub — update after hand-eye calibration
+
+gripper:
+  type: robotiq_2f_85
+  primary_joint: finger_joint
+  note: >
+    URCap gripper is commanded via socket, not URDF finger_joint.
+    URDF finger_joint is for visualization / Isaac only.

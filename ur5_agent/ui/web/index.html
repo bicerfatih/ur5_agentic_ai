@@ -3,23 +3,53 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>EMiRO · Robot Ops Console</title>
-  <link rel="icon" href="/assets/emiro-logo.png" type="image/png" />
+  <title>Project 2 · Robot Ops Console</title>
   <link rel="stylesheet" href="/assets/styles.css?v=UI_BUILD_ID" />
+  <script>
+    // Optional local brand override — brand.local.json is gitignored.
+    fetch("/assets/brand/brand.local.json", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => {
+        if (!b) return;
+        const apply = () => {
+          if (b.title) document.title = b.title;
+          if (b.favicon) {
+            const link = document.createElement("link");
+            link.rel = "icon";
+            link.href = b.favicon;
+            document.head.appendChild(link);
+          }
+          const tag = document.querySelector(".brand-tag");
+          if (tag && b.name) tag.textContent = b.name;
+          const mark = document.querySelector(".brand-mark");
+          if (mark && b.name) mark.title = b.name;
+          const logo = document.querySelector(".brand-logo");
+          if (logo && b.logo) {
+            const img = document.createElement("img");
+            img.className = "brand-logo";
+            img.src = b.logo;
+            img.alt = b.name || "";
+            logo.replaceWith(img);
+          }
+        };
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", apply);
+        } else {
+          apply();
+        }
+      })
+      .catch(() => {});
+  </script>
 </head>
 <body>
   <div class="bg-grid"></div>
   <header class="topbar">
     <div class="topbar-brand">
-      <a class="brand-mark" href="/" title="EMiRO">
-        <img
-          class="brand-logo"
-          src="/assets/emiro-logo.png?v=1"
-          alt="EMiRO"
-        />
+      <a class="brand-mark" href="/" title="Project 2">
+        <span class="brand-logo" aria-label="Project 2">P2</span>
       </a>
       <div class="brand-text">
-        <p class="brand-tag">EMiRO</p>
+        <p class="brand-tag">Project 2</p>
         <h1>Robot Ops Console</h1>
         <p id="subtitle">Agentic Physical AI Mission Control</p>
       </div>
@@ -46,7 +76,7 @@
           class="speech-talk speech-talk-trigger btn-mic"
           aria-pressed="false"
           title="Click to start recording, click again to stop and transcribe"
-        >MIC — Click to record</button>
+        >Mic - Speak</button>
         <button type="button" id="run-goal" class="primary btn-run">Run</button>
       </div>
       <div class="speech-row speech-options">
@@ -92,6 +122,27 @@
       <pre id="telemetry" class="log"></pre>
     </section>
 
+    <section class="panel manual" id="manual-control-panel">
+      <h2>Manual Control</h2>
+      <p class="small manual-hint">
+        Arrows alone: coordinated TCP move · <kbd>1</kbd>–<kbd>6</kbd> + <kbd>←</kbd>/<kbd>→</kbd> jog joint ·
+        <kbd>7</kbd> + <kbd>←</kbd>/<kbd>→</kbd> gripper · row <kbd>−</kbd>/<kbd>+</kbd> buttons
+      </p>
+      <div class="manual-step-row">
+        <label class="manual-step-label">TCP step
+          <input type="number" id="jog-step-cm" value="2" min="0.5" max="25" step="0.5" /> cm
+        </label>
+        <label class="manual-step-label">Joint step
+          <input type="number" id="jog-step-deg" value="5" min="0.5" max="15" step="0.5" /> °
+        </label>
+        <button type="button" id="manual-stop" class="chip manual-stop">Stop</button>
+      </div>
+      <div id="manual-cartesian" class="manual-cartesian-wrap"></div>
+      <div id="manual-joints" class="manual-grid"></div>
+      <div id="manual-gripper-row"></div>
+      <p id="manual-status" class="small manual-status">Loading…</p>
+    </section>
+
     <section class="panel controls">
       <h2>Tool Console</h2>
       <div class="buttons">
@@ -123,6 +174,7 @@
   <script src="/assets/vendor/three.min.js"></script>
   <script src="/assets/twin.js?v=12"></script>
   <script src="/assets/speech.js?v=UI_BUILD_ID"></script>
+  <script src="/assets/manual.js?v=UI_BUILD_ID"></script>
   <script src="/assets/app.js?v=UI_BUILD_ID"></script>
 </body>
 </html>

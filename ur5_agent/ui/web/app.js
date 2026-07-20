@@ -38,7 +38,10 @@ async function postTool(name, inputs = {}) {
       cameraHint.textContent = `Capture failed: ${result.reason || "unknown error"}`;
     }
   }
+  return body;
 }
+
+window.postTool = postTool;
 
 function renderEvents(events = []) {
   eventsEl.innerHTML = "";
@@ -130,7 +133,10 @@ function renderState(payload) {
   }
   const gs = payload.goal_status || {};
   if (typeof window.onAgentGoalStatus === "function") {
-    window.onAgentGoalStatus(gs);
+    window.onAgentGoalStatus(gs, payload.events || []);
+  }
+  if (typeof window.onManualTelemetry === "function") {
+    window.onManualTelemetry(payload);
   }
   if (gs.running) {
     goalStatusEl.textContent = `Running: ${gs.goal || ""} (check terminal for live tool output)`;
@@ -335,6 +341,9 @@ async function init() {
 
   if (typeof window.initSpeechTask === "function") {
     await window.initSpeechTask();
+  }
+  if (typeof window.initManualControl === "function") {
+    window.initManualControl();
   }
 }
 

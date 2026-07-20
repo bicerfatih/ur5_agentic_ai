@@ -6,7 +6,7 @@ from robot.mock_driver import MockDriver
 
 class OpenArmDriver(RobotDriver):
     """
-    Future driver for OpenArm robots in airport / Emirates operations.
+    Future driver for OpenArm robots in airport operations.
     Hardware SDK not wired yet — use --dry-run or MockDriver until integration.
     """
 

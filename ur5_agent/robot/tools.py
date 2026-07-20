@@ -13,27 +13,82 @@ from config.settings import (
     CAMERA_TYPE,
     GRIPPER_TOGGLE_PAUSE_SEC,
     GRIPPER_TYPE,
+    HAND_EYE_CALIB_PATH,
     MAX_SINGLE_MOVE_DOWN,
     MOTION_BACKWARD_VEC,
     MOTION_DOWN_VEC,
     MOTION_FORWARD_VEC,
+    MOTION_HORIZONTAL_MODE,
     MOTION_LEFT_VEC,
     MOTION_RIGHT_VEC,
     MOTION_UP_VEC,
+    REACH_APPROACH_OFFSET_M,
+    REACH_DONE_DIST_M,
     ROBOTIQ_CLOSE_POS,
     ROBOTIQ_OPEN_POS,
+    RL_CONTROL_DT,
+    RL_OBS_MODE,
+    RL_POLICY_PATH,
 )
+from robot.motion_math import tool_horizontal_unit
+from robot.policies.rl_policy import ReachPolicyRunner
 from policy.safety import MOTION_TOOLS, PolicyEngine
 from robot.base import RobotDriver
 
 if CAMERA_TYPE == "realsense":
     from camera import ObjectDetector, RealSenseCamera
+    from camera.geometry import HandEyeCalibration, estimate_object_target_base
 else:
     RealSenseCamera = None
     ObjectDetector = None
+    HandEyeCalibration = None
+    estimate_object_target_base = None
 
 _camera = None
 _detector = None
+_reach_runner = None
+_hand_eye = None
+
+
+def _parse_xyz_triplet(raw: str | list | None, default: list[float]) -> list[float]:
+    if raw is None:
+        return list(default)
+    if isinstance(raw, list) and len(raw) >= 3:
+        return [float(raw[0]), float(raw[1]), float(raw[2])]
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        if len(parts) >= 3:
+            return [float(parts[0]), float(parts[1]), float(parts[2])]
+    return list(default)
+
+
+def _ensure_hand_eye():
+    global _hand_eye
+    if HandEyeCalibration is None:
+        return None, {"status": "error", "reason": "Hand-eye calibration module unavailable."}
+    if _hand_eye is None:
+        _hand_eye = HandEyeCalibration(HAND_EYE_CALIB_PATH)
+    if not _hand_eye.loaded:
+        return None, {
+            "status": "error",
+            "reason": (
+                f"Hand-eye calibration not found at {HAND_EYE_CALIB_PATH}. "
+                "Copy data/calibration/hand_eye.example.json and fill measured values."
+            ),
+        }
+    return _hand_eye, None
+
+
+def _pick_detection_object(meta: dict, target_label: str) -> dict | None:
+    objs = meta.get("objects", []) if isinstance(meta, dict) else []
+    if not objs:
+        return None
+    if target_label:
+        needle = target_label.strip().lower()
+        for o in objs:
+            if needle in str(o.get("label", "")).lower():
+                return o
+    return objs[0]
 
 
 def _distance_magnitude(distance_m: float, tool_name: str) -> float:
@@ -67,6 +122,29 @@ def move_home(robot: RobotDriver) -> dict:
         "position": "home",
         "joints": robot.get_joint_positions(),
     }
+
+
+def jog_joint(
+    robot: RobotDriver,
+    joint: int,
+    delta_deg: float,
+    speed: float = 0.25,
+    acceleration: float = 0.25,
+) -> dict:
+    """Relative joint jog: joint 1–6, delta_deg positive = + direction."""
+    if joint < 1 or joint > 6:
+        return {"status": "error", "reason": "joint must be 1–6"}
+    if abs(delta_deg) < 0.01:
+        return {"status": "error", "reason": "delta_deg too small"}
+    if abs(delta_deg) > 15.0:
+        return {"status": "error", "reason": "delta_deg max 15° per jog"}
+
+    current_deg = [math.degrees(v) for v in robot.get_joint_positions()]
+    idx = joint - 1
+    target = list(current_deg)
+    target[idx] = round(target[idx] + float(delta_deg), 3)
+    print(f"  [TOOL] jog_joint J{joint} {delta_deg:+.2f}° → {target}")
+    return move_joint(robot, target, speed=speed, acceleration=acceleration)
 
 
 def move_joint(
@@ -116,10 +194,42 @@ def _motion_result(requested_m: float, motion_report: dict | None) -> dict:
     return out
 
 
+_HORIZONTAL_TOOL_AXES = {
+    "move_left": (0.0, -1.0, 0.0),
+    "move_right": (0.0, 1.0, 0.0),
+    "move_forward": (1.0, 0.0, 0.0),
+    "move_backward": (-1.0, 0.0, 0.0),
+}
+
+_BASE_HORIZONTAL_FALLBACK = {
+    "move_left": MOTION_LEFT_VEC,
+    "move_right": MOTION_RIGHT_VEC,
+    "move_forward": MOTION_FORWARD_VEC,
+    "move_backward": MOTION_BACKWARD_VEC,
+}
+
+
+def _motion_axis(robot: RobotDriver, tool_name: str, axis: tuple[float, float, float]) -> tuple[float, float, float]:
+    if MOTION_HORIZONTAL_MODE != "tool_horizontal" or tool_name not in _HORIZONTAL_TOOL_AXES:
+        return axis
+    try:
+        pose = robot.get_tcp_pose()
+    except Exception:
+        return _BASE_HORIZONTAL_FALLBACK.get(tool_name, axis)
+    if not pose or len(pose) < 6:
+        return _BASE_HORIZONTAL_FALLBACK.get(tool_name, axis)
+    unit = tool_horizontal_unit((pose[3], pose[4], pose[5]), _HORIZONTAL_TOOL_AXES[tool_name])
+    if unit == (0.0, 0.0, 0.0):
+        return _BASE_HORIZONTAL_FALLBACK.get(tool_name, axis)
+    return unit
+
+
 def _move_along_axis(robot: RobotDriver, tool_name: str, axis: tuple[float, float, float], distance_m: float) -> dict:
     d = _distance_magnitude(distance_m, tool_name)
-    dx, dy, dz = (axis[0] * d, axis[1] * d, axis[2] * d)
-    print(f"  [TOOL] {tool_name} {d * 100:.1f}cm  (base Δ [{dx:.3f}, {dy:.3f}, {dz:.3f}])")
+    unit = _motion_axis(robot, tool_name, axis)
+    dx, dy, dz = (unit[0] * d, unit[1] * d, unit[2] * d)
+    frame = "tool-horizontal" if tool_name in _HORIZONTAL_TOOL_AXES and MOTION_HORIZONTAL_MODE == "tool_horizontal" else "base"
+    print(f"  [TOOL] {tool_name} {d * 100:.1f}cm  ({frame} Δ [{dx:.3f}, {dy:.3f}, {dz:.3f}])")
     report = robot.move_tcp_relative(dx=dx, dy=dy, dz=dz)
     result = _motion_result(d, report)
     if result.get("status") == "error":
@@ -299,8 +409,9 @@ def detect_objects(
     session_id: str = "lab",
     prefix: str = "detect",
     label_filter: str = "",
+    include_3d: bool = True,
+    approach_offset_m: list | None = None,
 ) -> dict:
-    del robot
     cam, err = _ensure_camera()
     if err:
         return err
@@ -309,7 +420,8 @@ def detect_objects(
 
     print("  [TOOL] detect_objects")
     try:
-        frame = cam.capture_color_frame()
+        rgbd = cam.capture_rgbd()
+        frame = rgbd["color"]
         meta = _detector.detect(frame)
         objects = meta.get("objects", [])
         if label_filter:
@@ -325,6 +437,38 @@ def detect_objects(
                 "label_filter": label_filter,
             }
 
+        pose3d = None
+        if include_3d and rgbd.get("depth") is not None and estimate_object_target_base is not None:
+            calib, calib_err = _ensure_hand_eye()
+            if calib_err:
+                pose3d = {"status": "error", "reason": calib_err["reason"]}
+            else:
+                offset = _parse_xyz_triplet(
+                    approach_offset_m,
+                    _parse_xyz_triplet(REACH_APPROACH_OFFSET_M, [0.0, 0.0, 0.05]),
+                )
+                st = robot.get_full_state()
+                tcp_pose = st.get("tcp_pose") if calib.mount == "eye_in_hand" else None
+                enriched = []
+                for obj in objects:
+                    est = estimate_object_target_base(
+                        obj=obj,
+                        depth_image=rgbd["depth"],
+                        depth_scale=float(rgbd.get("depth_scale", 0.001)),
+                        intrinsics=rgbd.get("intrinsics") or {},
+                        calib=calib,
+                        tcp_pose=tcp_pose,
+                        approach_offset_m=offset,
+                    )
+                    if est and "target_base_m" in est:
+                        obj = {**obj, "target_base_m": est["target_base_m"], "pose3d": est}
+                    elif est and est.get("error"):
+                        obj = {**obj, "pose3d_error": est["error"]}
+                    enriched.append(obj)
+                objects = enriched
+                meta["objects"] = objects
+                pose3d = {"status": "ok", "approach_offset_m": offset}
+
         result = {
             "status": "done",
             "count": meta.get("count", 0),
@@ -334,6 +478,7 @@ def detect_objects(
             "model": meta.get("model"),
             "objects": objects,
             "image_shape": list(frame.shape),
+            "pose3d": pose3d,
         }
         if save_image:
             import cv2
@@ -352,6 +497,171 @@ def detect_objects(
         return result
     except Exception as e:
         return {"status": "error", "reason": str(e)}
+
+
+def execute_rl_policy(
+    robot: RobotDriver,
+    task_id: str = "reach_free_space",
+    steps: int = 10,
+    target_label: str = "",
+    policy_path: str = "",
+    target_tcp: list | None = None,
+    max_step_m: float = 0.01,
+    settle_sec: float = RL_CONTROL_DT,
+    approach_offset_m: list | None = None,
+    reach_done_dist_m: float = REACH_DONE_DIST_M,
+) -> dict:
+    """
+    RL reach loop for safe Cartesian corrections.
+    - reach_free_space: known target_tcp in base frame (meters).
+    - camera_reach: detect object + depth + hand-eye -> 3D target, then RL steps in X/Y/Z.
+    """
+    policy_file = (policy_path or RL_POLICY_PATH or "").strip()
+    n_steps = max(1, min(int(steps), 100))
+    max_step_m = max(0.001, min(float(max_step_m), 0.03))
+    settle_sec = max(0.02, min(float(settle_sec), 1.0))
+    # target_tcp is optional for reach task. If omitted, we use +5cm in X from
+    # current TCP to keep behavior deterministic.
+
+    global _reach_runner
+    if _reach_runner is None or _reach_runner.policy_path != policy_file:
+        _reach_runner = ReachPolicyRunner(policy_file)
+
+    print(f"  [TOOL] execute_rl_policy task={task_id} steps={n_steps} obs={RL_OBS_MODE}")
+    trace = []
+    if task_id in ("reach_free_space", "rl_reach", "reach"):
+        state0 = robot.get_full_state()
+        tcp0 = state0.get("tcp_pose") or [0.3, 0.0, 0.3, 0.0, 0.0, 0.0]
+        if target_tcp is None:
+            target_xyz = [float(tcp0[0] + 0.05), float(tcp0[1]), float(tcp0[2])]
+        else:
+            if not isinstance(target_tcp, list) or len(target_tcp) < 3:
+                return {"status": "error", "reason": "target_tcp must be [x, y, z] in meters."}
+            target_xyz = [float(target_tcp[0]), float(target_tcp[1]), float(target_tcp[2])]
+        for i in range(n_steps):
+            st = robot.get_full_state()
+            step = _reach_runner.step(st, target_xyz, max_step_m=max_step_m)
+            dist = (
+                (
+                    (target_xyz[0] - st["tcp_pose"][0]) ** 2
+                    + (target_xyz[1] - st["tcp_pose"][1]) ** 2
+                    + (target_xyz[2] - st["tcp_pose"][2]) ** 2
+                )
+                ** 0.5
+            )
+            info = {
+                "step": i + 1,
+                "task": "reach_free_space",
+                "target_tcp": [round(v, 4) for v in target_xyz],
+                "dist_m": round(float(dist), 5),
+                "policy_source": step.source,
+                "action": {"dx": round(step.dx, 5), "dy": round(step.dy, 5), "dz": round(step.dz, 5)},
+            }
+            trace.append(info)
+            if step.source == "done":
+                return {
+                    "status": "done",
+                    "task_id": task_id,
+                    "steps_used": i + 1,
+                    "trace": trace,
+                    "note": "Reached target in free-space RL task.",
+                }
+            report = robot.move_tcp_relative(dx=step.dx, dy=step.dy, dz=step.dz)
+            info["motion_report"] = report
+            time.sleep(settle_sec)
+        return {
+            "status": "done",
+            "task_id": task_id,
+            "steps_used": n_steps,
+            "trace": trace,
+            "note": "Max steps reached in reach task.",
+        }
+
+    cam, err = _ensure_camera()
+    if err:
+        return err
+    if _detector is None:
+        return {"status": "error", "reason": "Object detector unavailable."}
+    calib, calib_err = _ensure_hand_eye()
+    if calib_err:
+        return calib_err
+
+    offset = _parse_xyz_triplet(
+        approach_offset_m,
+        _parse_xyz_triplet(REACH_APPROACH_OFFSET_M, [0.0, 0.0, 0.05]),
+    )
+    done_dist = max(0.003, min(float(reach_done_dist_m), 0.05))
+
+    for i in range(n_steps):
+        st = robot.get_full_state()
+        tcp_pose = st.get("tcp_pose") or [0.3, 0.0, 0.3, 0.0, 0.0, 0.0]
+        rgbd = cam.capture_rgbd()
+        frame = rgbd["color"]
+        depth = rgbd.get("depth")
+        if depth is None:
+            return {
+                "status": "error",
+                "reason": "Depth stream unavailable. Set CAMERA_DEPTH_ENABLED=true.",
+                "trace": trace,
+            }
+
+        meta = _detector.detect(frame)
+        tgt = _pick_detection_object(meta, target_label)
+        if tgt is None:
+            return {"status": "error", "reason": "No detected target in frame.", "trace": trace}
+
+        est = estimate_object_target_base(
+            obj=tgt,
+            depth_image=depth,
+            depth_scale=float(rgbd.get("depth_scale", 0.001)),
+            intrinsics=rgbd.get("intrinsics") or {},
+            calib=calib,
+            tcp_pose=tcp_pose if calib.mount == "eye_in_hand" else None,
+            approach_offset_m=offset,
+        )
+        if est is None or "target_base_m" not in est:
+            reason = (est or {}).get("error", "Could not estimate 3D target (depth/intrinsics).")
+            return {"status": "error", "reason": reason, "trace": trace}
+
+        target_xyz = [float(v) for v in est["target_base_m"]]
+        step = _reach_runner.step(st, target_xyz, max_step_m=max_step_m)
+        dist = (
+            (target_xyz[0] - tcp_pose[0]) ** 2
+            + (target_xyz[1] - tcp_pose[1]) ** 2
+            + (target_xyz[2] - tcp_pose[2]) ** 2
+        ) ** 0.5
+        info = {
+            "step": i + 1,
+            "task": "camera_reach_3d",
+            "target_label": tgt.get("label"),
+            "target_tcp": [round(v, 4) for v in target_xyz],
+            "dist_m": round(float(dist), 5),
+            "pose3d": est,
+            "policy_source": step.source,
+            "action": {"dx": round(step.dx, 5), "dy": round(step.dy, 5), "dz": round(step.dz, 5)},
+        }
+        trace.append(info)
+
+        if step.source == "done" or dist < done_dist:
+            return {
+                "status": "done",
+                "task_id": task_id,
+                "steps_used": i + 1,
+                "trace": trace,
+                "note": "Reached 3D target from camera detection.",
+            }
+
+        report = robot.move_tcp_relative(dx=step.dx, dy=step.dy, dz=step.dz)
+        info["motion_report"] = report
+        time.sleep(settle_sec)
+
+    return {
+        "status": "done",
+        "task_id": task_id,
+        "steps_used": n_steps,
+        "trace": trace,
+        "note": "Max steps reached in 3D camera reach; re-detect or increase steps.",
+    }
 
 
 def execute_tool(
@@ -373,7 +683,7 @@ def execute_tool(
         print(f"  [POLICY] blocked: {block['reason']}")
         return block
 
-    if name == "move_joint" and "speed" in inputs:
+    if name in ("move_joint", "jog_joint") and "speed" in inputs:
         js, _ = policy.clamp_speeds(inputs.get("speed"), None)
         inputs["speed"] = js
     if name in ("move_linear", "move_up", "move_down", "move_left", "move_right", "move_forward", "move_backward"):
@@ -385,6 +695,7 @@ def execute_tool(
         "get_robot_state": lambda: get_robot_state(robot, policy),
         "move_home": lambda: move_home(robot),
         "move_joint": lambda: move_joint(robot, **inputs),
+        "jog_joint": lambda: jog_joint(robot, **inputs),
         "move_linear": lambda: move_linear(robot, **inputs),
         "move_up": lambda: move_up(robot, **inputs),
         "move_down": lambda: move_down(robot, **inputs),
@@ -403,6 +714,7 @@ def execute_tool(
         "reconnect_rtde_control": lambda: reconnect_rtde_control(robot),
         "get_camera_frame": lambda: get_camera_frame(robot, **inputs),
         "detect_objects": lambda: detect_objects(robot, **inputs),
+        "execute_rl_policy": lambda: execute_rl_policy(robot, **inputs),
     }
     fn = dispatch.get(name)
     if fn is None:
@@ -423,6 +735,20 @@ TOOL_SCHEMAS = [
             "to go home — never for error recovery or unclear commands."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "jog_joint",
+        "description": "Relative joint jog for manual control: joint 1–6, delta_deg in degrees.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "joint": {"type": "integer", "minimum": 1, "maximum": 6},
+                "delta_deg": {"type": "number", "description": "Degrees to add (+ or −)"},
+                "speed": {"type": "number"},
+                "acceleration": {"type": "number"},
+            },
+            "required": ["joint", "delta_deg"],
+        },
     },
     {
         "name": "move_joint",
@@ -484,7 +810,7 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "move_left",
-        "description": "Move TCP left (negative Y) in meters.",
+        "description": "Move TCP left along the table plane (straight Cartesian move, gripper-aligned). distance_m in meters.",
         "input_schema": {
             "type": "object",
             "properties": {"distance_m": {"type": "number"}},
@@ -493,7 +819,7 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "move_right",
-        "description": "Move TCP right (positive Y) in meters.",
+        "description": "Move TCP right along the table plane (straight Cartesian move, gripper-aligned). distance_m in meters.",
         "input_schema": {
             "type": "object",
             "properties": {"distance_m": {"type": "number"}},
@@ -594,7 +920,7 @@ TOOL_SCHEMAS = [
         "name": "detect_objects",
         "description": (
             "Capture a live camera frame and run object detection (YOLO or contour fallback). "
-            "Returns count, label names, and bounding boxes in image pixels."
+            "Returns labels, bounding boxes, and (with depth + hand-eye calib) target_base_m in meters."
         ),
         "input_schema": {
             "type": "object",
@@ -609,6 +935,31 @@ TOOL_SCHEMAS = [
                     "type": "string",
                     "description": "Optional substring filter (e.g. 'cup') — only matching objects returned",
                 },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "execute_rl_policy",
+        "description": (
+            "Run RL policy for safe 3D Cartesian reach. reach_free_space uses target_tcp; "
+            "camera_reach detects object, estimates base-frame XYZ from depth + calibration, "
+            "then RL steps in dx/dy/dz until within reach_done_dist_m."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Policy task id, e.g. reach_free_space or camera_reach"},
+                "steps": {"type": "integer", "minimum": 1, "maximum": 100},
+                "target_label": {"type": "string", "description": "Preferred detection label (optional, camera mode)"},
+                "policy_path": {"type": "string", "description": "Optional trained policy checkpoint path"},
+                "target_tcp": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "description": "Optional state-reach target [x,y,z] in meters (task_id=reach_free_space)",
+                },
+                "max_step_m": {"type": "number", "description": "Max Cartesian step per control tick (meters)"},
+                "settle_sec": {"type": "number", "description": "Pause between control steps in seconds"},
             },
             "required": [],
         },

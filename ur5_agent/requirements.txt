@@ -7,5 +7,13 @@ python-multipart>=0.0.9
 uvicorn[standard]>=0.30.0
 websockets>=12.0
 ultralytics>=8.2.0
+PyYAML>=6.0
+numpy>=1.24.0
+requests>=2.31.0
+# Optional: talk to official OpenVLA deploy.py server (VLA_WIRE_FORMAT=openvla_native):
+# json-numpy>=2.0.0
+# Optional RL stack (camera policy training/eval):
+# gymnasium>=0.29.0
+# stable-baselines3>=2.3.0
 # Optional for offline voice goals (Record mode on Jetson):
 # faster-whisper>=1.0.0

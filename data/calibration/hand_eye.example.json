@@ -1,0 +1,12 @@
+{
+  "mount": "eye_to_hand",
+  "comment": "Replace translation_m and rotation_rpy_rad with measured hand-eye values for your lab setup.",
+  "translation_m": [0.45, -0.12, 0.72],
+  "rotation_rpy_rad": [3.14159, 0.0, 0.0],
+  "intrinsics": {
+    "fx": 615.0,
+    "fy": 615.0,
+    "cx": 320.0,
+    "cy": 240.0
+  }
+}

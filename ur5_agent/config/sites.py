@@ -1,4 +1,4 @@
-# config/sites.py — deployment profiles (lab → airport / Emirates)
+# config/sites.py — deployment profiles (lab → airport)
 
 from dataclasses import dataclass
 
@@ -8,7 +8,7 @@ class SiteProfile:
     site_id: str
     display_name: str
     environment: str  # lab | airport_ground | airport_cargo
-    operator: str  # dev | emirates
+    operator: str  # dev | airport_ops
     max_joint_speed: float
     max_linear_speed: float
     max_single_move_down: float
@@ -26,7 +26,7 @@ SITES: dict[str, SiteProfile] = {
         operator="dev",
         max_joint_speed=0.5,
         max_linear_speed=0.2,
-        max_single_move_down=0.10,
+        max_single_move_down=0.25,
         max_steps_per_goal=20,
         require_state_before_move=True,
         human_proximity_strict=False,
@@ -36,7 +36,7 @@ SITES: dict[str, SiteProfile] = {
         site_id="airport_ground",
         display_name="Airport Ground Operations",
         environment="airport_ground",
-        operator="emirates",
+        operator="airport_ops",
         max_joint_speed=0.25,
         max_linear_speed=0.08,
         max_single_move_down=0.05,
@@ -49,7 +49,7 @@ SITES: dict[str, SiteProfile] = {
         site_id="airport_cargo",
         display_name="Airport Cargo / Baggage",
         environment="airport_cargo",
-        operator="emirates",
+        operator="airport_ops",
         max_joint_speed=0.35,
         max_linear_speed=0.12,
         max_single_move_down=0.08,

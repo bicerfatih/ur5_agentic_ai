@@ -23,3 +23,13 @@ data/datasets/**/*
 !data/datasets/**/.gitkeep
 data/models/**/*
 !data/models/**/.gitkeep
+
+# Local-only branding (never push)
+ur5_agent/ui/web/brand/
+
+# URDF vendor clones (large; re-fetch with scripts/fetch_ur5_urdf.sh)
+assets/_vendor/
+assets/robots/ur5_robotiq/urdf/_build_vendor/
+assets/robots/ur5_robotiq/urdf/.ur5_robotiq.build.xacro
+# Generated URDF is committed for convenience; rebuild after xacro edits
+# assets/robots/ur5_robotiq/urdf/ur5_robotiq.urdf

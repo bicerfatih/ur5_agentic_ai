@@ -2,7 +2,7 @@
 
 ## North star
 
-Build **agentic AI** on **physical robots** that can operate safely in real environments, starting with a **UR5 lab prototype** and evolving to **OpenArm** systems at **airports** in support of **Emirates** ground and cargo operations.
+Build **agentic AI** on **physical robots** that can operate safely in real environments, starting with a **UR5 lab prototype** and evolving to **OpenArm** systems at **airports** for ground and cargo operations.
 
 ## Principles
 
@@ -20,7 +20,7 @@ Build **agentic AI** on **physical robots** that can operate safely in real envi
 | 2 | Perception (cameras, markers, bins/belts) | Planned |
 | 3 | OpenArm hardware driver (replace stub) | Planned |
 | 4 | Airport site integration (zones, supervisor UI) | Planned |
-| 5 | Fleet ops + Emirates workflow hooks | Planned |
+| 5 | Fleet ops + airport workflow hooks | Planned |
 
 ## Architecture
 

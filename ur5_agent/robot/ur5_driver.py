@@ -532,7 +532,9 @@ class UR5Driver(RobotDriver):
                         before[4],
                         before[5],
                     ]
-                return self._move_linear_from_locked(before, target, speed, accel)
+                report = self._move_linear_from_locked(before, target, speed, accel)
+                report["start_tcp"] = [round(v, 4) for v in before]
+                return report
         finally:
             self._motion_busy = False
             self._finish_motion_rtde()

@@ -79,7 +79,105 @@
     window.speechSynthesis.speak(u);
   }
 
-  function onGoalStatus(gs) {
+  const MOTION_DIR = {
+    move_up: "up",
+    move_down: "down",
+    move_left: "left",
+    move_right: "right",
+    move_forward: "forward",
+    move_backward: "backward",
+  };
+
+  const GRIPPER_PHRASE = {
+    open_gripper: "opened gripper",
+    close_gripper: "closed gripper",
+    toggle_gripper: "toggled gripper",
+  };
+
+  function formatCentimeters(cm) {
+    const n = Math.round(Math.abs(cm));
+    if (!n) return "";
+    return n === 1 ? "1 centimeter" : `${n} centimeters`;
+  }
+
+  function formatDistanceSpeech(meters) {
+    if (meters == null || !Number.isFinite(Number(meters))) return "";
+    return formatCentimeters(Number(meters) * 100);
+  }
+
+  function formatUnitSpeech(amount, unit) {
+    const n = parseFloat(amount);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    const u = (unit || "").replace(/s$/, "");
+    if (u === "cm" || u === "centimeter") return formatCentimeters(n);
+    if (u === "mm" || u === "millimeter") return formatCentimeters(n / 10);
+    if (u === "m" || u === "meter") return formatCentimeters(n * 100);
+    return `${n} ${unit}`;
+  }
+
+  function summarizeMotionEvent(evt) {
+    const tool = evt?.tool;
+    const dir = MOTION_DIR[tool];
+    if (dir) {
+      const dist = formatDistanceSpeech(evt.inputs?.distance_m);
+      return dist ? `${dist} ${dir}` : dir;
+    }
+    return GRIPPER_PHRASE[tool] || null;
+  }
+
+  function summarizeFromEvents(events, sinceTs) {
+    if (!Array.isArray(events) || !sinceTs) return null;
+    const windowStart = sinceTs - 2;
+    const phrases = [];
+    for (let i = events.length - 1; i >= 0; i--) {
+      const evt = events[i];
+      if (!evt || evt.ts < windowStart) continue;
+      const result = evt.result;
+      if (result?.status === "error") continue;
+      const phrase = summarizeMotionEvent(evt);
+      if (phrase) phrases.push(phrase);
+    }
+    return phrases.length ? phrases.join(", then ") : null;
+  }
+
+  function summarizeFromGoal(goal) {
+    const g = (goal || "").trim().toLowerCase();
+    if (!g) return null;
+
+    const withDistance = [
+      /(?:go|move)\s+(up|down|left|right|forward|back(?:ward)?)\s+(\d+(?:\.\d+)?)\s*(cm|centimeters?|mm|millimeters?|m|meters?)\b/,
+      /(\d+(?:\.\d+)?)\s*(cm|centimeters?|mm|millimeters?|m|meters?)\s+(up|down|left|right|forward|back(?:ward)?)\b/,
+    ];
+    for (const re of withDistance) {
+      const m = g.match(re);
+      if (!m) continue;
+      let dir;
+      let amount;
+      let unit;
+      if (/^(up|down|left|right|forward|back)/.test(m[1])) {
+        [, dir, amount, unit] = m;
+      } else {
+        [, amount, unit, dir] = m;
+      }
+      dir = dir.replace(/^back(?:ward)?$/, "backward");
+      const dist = formatUnitSpeech(amount, unit);
+      return dist ? `${dist} ${dir}` : dir;
+    }
+
+    const simple = g.match(/(?:go|move)\s+(up|down|left|right|forward|back(?:ward)?)\b/);
+    if (simple) return simple[1].replace(/^back(?:ward)?$/, "backward");
+
+    if (/\bopen\b.*\bgripper\b/.test(g)) return "opened gripper";
+    if (/\bclose\b.*\bgripper\b/.test(g)) return "closed gripper";
+
+    return goal.trim();
+  }
+
+  function taskSummaryForSpeech(gs, events) {
+    return summarizeFromEvents(events, gs?.started_at) || summarizeFromGoal(gs?.goal);
+  }
+
+  function onGoalStatus(gs, events) {
     if (!gs) return;
     if (gs.running && !state.lastGoalRunning) {
       state.lastGoalRunning = true;
@@ -92,14 +190,15 @@
         setStatus(`Goal error: ${gs.error}`, "error");
       } else if (gs.goal) {
         const note = gs.note ? ` ${gs.note}` : "";
-        speak("Task finished.");
+        const summary = taskSummaryForSpeech(gs, events);
+        speak(summary ? `Task finished. ${summary}.` : "Task finished.");
         setStatus(`Finished: ${gs.goal}${note}`, "ok");
       }
     }
   }
 
-  window.onAgentGoalStatus = function (goalStatus) {
-    onGoalStatus(goalStatus);
+  window.onAgentGoalStatus = function (goalStatus, events) {
+    onGoalStatus(goalStatus, events);
   };
 
   function updateMicButton() {
@@ -118,7 +217,7 @@
       btn.classList.remove("listening");
       btn.disabled = true;
     } else {
-      btn.textContent = "MIC — Click to record";
+      btn.textContent = "Mic - Speak";
       btn.classList.remove("listening");
       btn.disabled = false;
       btn.setAttribute("aria-pressed", "false");
@@ -152,8 +251,10 @@
       return;
     }
     updateModeUi();
-    const model = state.config?.local_whisper_model || "?";
-    setStatus(`Ready: local Whisper / ${model} on Jetson`, "ok");
+    const provider = state.config?.cloud_provider || "";
+    const model = state.config?.whisper_model || state.config?.local_whisper_model || "?";
+    const where = provider === "openai_whisper" ? "OpenAI" : "local on Jetson";
+    setStatus(`Ready: ${model} (${where})`, "ok");
   }
 
   function isChromiumLinux() {

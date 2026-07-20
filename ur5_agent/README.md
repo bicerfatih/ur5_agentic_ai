@@ -1,11 +1,12 @@
 # UR5 Agentic AI — Physical + Agentic Robot Platform
 
-Natural-language control of a robot arm with Claude, built for **lab validation on UR5** and **future OpenArm deployment at airports (Emirates operations)**.
+Natural-language control of a robot arm with Claude, built for **lab validation on UR5** and **future OpenArm deployment at airports (operations)**.
 
 See [VISION.md](../VISION.md) for the long-term scope.  
 Training plan: [docs/TRAINING.md](../docs/TRAINING.md) · Data folders: [data/README.md](../data/README.md)  
 Gripper (Robotiq ID 1): [docs/ROBOTIQ_GRIPPER.md](../docs/ROBOTIQ_GRIPPER.md) · `.urp`: [docs/GRIPPER_PROGRAMS.md](../docs/GRIPPER_PROGRAMS.md)
 Camera (Intel RealSense): [docs/CAMERA_REALSENSE.md](../docs/CAMERA_REALSENSE.md)
+RL scaffold (camera-first): [docs/RL.md](../docs/RL.md)
 
 ## Hardware (lab)
 
@@ -79,7 +80,7 @@ python3 main.py --llm claude --robot ur5 --site lab
 | `--robot ur5` | Universal Robots arm (default) |
 | `--robot openarm` | OpenArm stub (hardware TBD) |
 | `--site lab` | Development limits |
-| `--site airport_ground` | Slower speeds, 15cm horizontal cap, Emirates context |
+| `--site airport_ground` | Slower speeds, 15cm horizontal cap, airport context |
 | `--site airport_cargo` | Cargo zone profile |
 | `--dry-run` | Mock driver — no network to robot |
 | `--host IP` | UR5 controller address |
@@ -114,6 +115,7 @@ Open `http://localhost:8788`, allow microphone, click **Refresh mics**, pick **J
 - `what is the TCP force right now?`
 - `capture a camera frame for this session`
 - `detect objects in the camera and tell me what you see`
+- `run execute_rl_policy for 10 steps toward the cup`
 
 REPL shortcuts: `state`, `quit`.
 

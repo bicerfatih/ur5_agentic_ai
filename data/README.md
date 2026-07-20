@@ -20,6 +20,8 @@ data/
 │   └── isaac/                ← renders from Isaac Sim (Phase 2+)
 ├── labels/
 │   └── detection/            ← YOLO/COCO exports before packaging
+├── demos/                    ← human teleop episodes (Phase 3 IL)
+│   └── reach/                ← record_demo.py JSON episodes
 ├── datasets/                 ← training-ready packages (versioned)
 │   └── detection/
 │       └── lab_v1/           ← example: images/ labels/ data.yaml
@@ -27,7 +29,7 @@ data/
     ├── detection/
     │   └── lab_v1/           ← e.g. weights/best.pt
     └── policies/
-        └── lab_grasp_v1/     ← Phase 3+ learned policies
+        └── lab_grasp_v1/     ← Phase 3+ learned policies (RL .zip or BC bc_weights.npz)
 ```
 
 ## Naming convention

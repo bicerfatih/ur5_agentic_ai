@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 
+from agent.goal_motion import parse_cartesian_motion_goal
 from agent.prompts import build_system_prompt
 from config.settings import LOG_FILE
 from config.sites import SiteProfile
@@ -48,6 +49,23 @@ class BaseRobotAgent:
 
         self.policy.begin_goal()
         self.last_run_note = None
+
+        direct_calls = parse_cartesian_motion_goal(goal)
+        if direct_calls:
+            call = direct_calls[0]
+            print(
+                f"\n📐  Cartesian goal → {call['name']}"
+                f"(distance_m={call['arguments']['distance_m']}) via moveL (all joints coordinated)\n",
+                flush=True,
+            )
+            self._log(f"DIRECT CARTESIAN: {call}")
+            _, notes = self._execute_tools(self.robot, self.policy, direct_calls)
+            if notes:
+                self.last_run_note = notes
+            print("\n✅  Cartesian move complete.")
+            self._log("DONE direct cartesian")
+            return
+
         messages = self._initial_messages(goal)
         step = 0
         max_steps = self.site.max_steps_per_goal

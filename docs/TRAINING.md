@@ -2,7 +2,7 @@
 
 This document maps **what to train**, **what to keep pretrained**, and **how data flows** from your UR5 lab through Isaac Sim to airport deployment.
 
-Related: [VISION.md](../VISION.md), [KICKOFF.md](../KICKOFF.md), [data/README.md](../data/README.md).
+Related: [VISION.md](../VISION.md), [KICKOFF.md](../KICKOFF.md), [data/README.md](../data/README.md), [IL.md](IL.md) (human demos + behavior cloning).
 
 ---
 
@@ -112,7 +112,7 @@ Models that map **image + text → actions** (e.g. research RT-style stacks).
 | Unstructured language + varied objects | MoveIt + detector + agent tools already work |
 | Large GPU budget and research team | Airport ops need explainability and audits |
 
-Default path for Emirates/airport: **detector + MoveIt + agent**, not monolithic VLA.
+Default path for airport operations: **detector + MoveIt + agent**, not monolithic VLA.
 
 ---
 
@@ -223,7 +223,7 @@ Training improves **tool backends**, not the agent loop structure.
 - [ ] 50+ real UR5 demos; sim→real fine-tune
 - [ ] MoveIt collision scene includes tables/bins
 
-### Phase 4 (airport / Emirates)
+### Phase 4 (airport operations)
 
 - [ ] `airport_cargo_v1` / `airport_ground_v1` datasets from site
 - [ ] Retrain or fine-tune detectors on site lighting
