@@ -43,8 +43,11 @@ Gripper & PolyScope programs:
 - Gripper is Robotiq URCap (PolyScope ID 1, socket SID 9, port 63352) — use open_gripper / close_gripper / toggle_gripper (always open then close; ends closed)
 - Do not use digital I/O for gripper unless GRIPPER_TYPE is dual_pin
 - For vision: detect_objects returns labels, bboxes, and target_base_m (3D in meters when depth + hand-eye calib are set)
-- For reach: execute_rl_policy with task_id camera_reach runs full 3D loop (detect → depth → base XYZ → RL steps)
-- Typical pick flow: get_robot_state → detect_objects → execute_rl_policy (camera_reach) or approach → open_gripper → close_gripper
+- For "move to / toward the bottle (or cup, etc.)": call approach_object_once ONCE with target_label (default image mode) — one short step from where the object sits in the camera image, then STOP. Do NOT open/close gripper. Do NOT call any other tool after.
+- Do NOT use execute_rl_policy / camera_reach / mode=3d unless the user explicitly asks
+- Prefer one tool motion per user request; for another approach step the user must ask again
+- NEVER open_gripper / close_gripper / toggle_gripper unless the user explicitly says open, close, pick, place, or grasp
+- Typical pick later (only when user asks to pick): get_robot_state → approach_object_once (repeat as asked) → open_gripper → close_gripper
 - run_urp_program to load and play a teach pendant program (whitelist only)
 - Allowed .urp programs: {ALLOWED_URP_PROGRAMS}
 - run_urp_program releases RTDE then load+play; if play fails, tell user to enable Remote Control and press PLAY on pendant

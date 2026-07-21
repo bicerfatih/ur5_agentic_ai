@@ -4,11 +4,11 @@ import datetime
 import json
 import os
 
-from agent.goal_motion import parse_cartesian_motion_goal
+from agent.goal_motion import parse_direct_motion_goal
 from agent.prompts import build_system_prompt
 from config.settings import LOG_FILE
 from config.sites import SiteProfile
-from policy.safety import PolicyEngine
+from policy.safety import GRIPPER_TOOLS, MOTION_TOOLS, PolicyEngine
 from robot.base import RobotDriver
 
 
@@ -47,23 +47,31 @@ class BaseRobotAgent:
         print(f"{'━' * 55}\n")
         self._log(f"GOAL: {goal}")
 
-        self.policy.begin_goal()
+        self.policy.begin_goal(goal)
         self.last_run_note = None
 
-        direct_calls = parse_cartesian_motion_goal(goal)
+        direct_calls = parse_direct_motion_goal(goal)
         if direct_calls:
             call = direct_calls[0]
-            print(
-                f"\n📐  Cartesian goal → {call['name']}"
-                f"(distance_m={call['arguments']['distance_m']}) via moveL (all joints coordinated)\n",
-                flush=True,
-            )
-            self._log(f"DIRECT CARTESIAN: {call}")
+            if call["name"] == "approach_object_once":
+                print(
+                    f"\n📷  Approach goal → one image step toward "
+                    f"{call['arguments'].get('target_label')!r} (no gripper, no multi-move)\n",
+                    flush=True,
+                )
+                self._log(f"DIRECT APPROACH: {call}")
+            else:
+                print(
+                    f"\n📐  Cartesian goal → {call['name']}"
+                    f"(distance_m={call['arguments']['distance_m']}) via moveL\n",
+                    flush=True,
+                )
+                self._log(f"DIRECT CARTESIAN: {call}")
             _, notes = self._execute_tools(self.robot, self.policy, direct_calls)
             if notes:
                 self.last_run_note = notes
-            print("\n✅  Cartesian move complete.")
-            self._log("DONE direct cartesian")
+            print("\n✅  Single-step move complete — stopped (no gripper).")
+            self._log("DONE direct single-step")
             return
 
         messages = self._initial_messages(goal)
@@ -89,9 +97,28 @@ class BaseRobotAgent:
                 self._log(f"DONE after {step} steps")
                 break
 
+            # Prefer a single motion/approach; drop gripper & extra moves from the batch.
+            action_calls = [
+                c
+                for c in tool_calls
+                if c.get("name") in MOTION_TOOLS or c.get("name") in GRIPPER_TOOLS
+            ]
+            if action_calls:
+                tool_calls = [action_calls[0]]
+                if len(action_calls) > 1:
+                    print(
+                        "⚠️  Truncated to ONE action (no gripper after move).",
+                        flush=True,
+                    )
+
             messages, notes = self._append_tool_round(messages, tool_calls)
             if notes:
                 self.last_run_note = notes
+
+            if self.policy._actions_this_goal >= 1 or self.policy._motions_this_goal >= 1:
+                print("\n✅  One action done — stopping (no follow-up tools).")
+                self._log("DONE after single action")
+                break
 
             if step >= max_steps:
                 print(f"⚠️  Max steps ({max_steps}) reached. Stopping.")
@@ -131,4 +158,12 @@ class BaseRobotAgent:
             results.append({"name": name, "result": result})
             if isinstance(result, dict) and result.get("status") == "error":
                 last_note = f"{name}: {result.get('reason', 'error')}"
+            # Stop the batch after first motion/gripper — never chain open_gripper after a move.
+            if name in MOTION_TOOLS or name in GRIPPER_TOOLS:
+                if len(tool_calls) > 1:
+                    print(
+                        "⚠️  Dropping remaining tools in this batch (one action only).",
+                        flush=True,
+                    )
+                break
         return results, last_note

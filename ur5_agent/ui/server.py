@@ -96,14 +96,29 @@ class RobotSession:
             self.connected = True
             if CAMERA_TYPE == "realsense":
                 self.live_camera = RealSenseCamera()
+                # Share one RealSense pipeline with agent tools (avoid Device busy).
+                try:
+                    from robot import tools as toolmod
+
+                    toolmod._camera = self.live_camera
+                except Exception:
+                    pass
 
     def disconnect(self):
         if self.connected:
             self.robot.disconnect()
             self.connected = False
         if self.live_camera:
-            self.live_camera.disconnect()
+            cam = self.live_camera
+            cam.disconnect()
             self.live_camera = None
+            try:
+                from robot import tools as toolmod
+
+                if toolmod._camera is cam:
+                    toolmod._camera = None
+            except Exception:
+                pass
 
     def state(self) -> dict[str, Any]:
         if getattr(self.robot, "motion_busy", False) and self.last_good_state is not None:
@@ -145,11 +160,29 @@ class RobotSession:
 
     def run_tool(self, name: str, inputs: dict[str, Any]) -> dict[str, Any]:
         start = time.time()
+        camera_tools = {
+            "get_camera_frame",
+            "detect_objects",
+            "approach_object_once",
+            "execute_rl_policy",
+            "execute_vla_policy",
+        }
         if name == "get_camera_frame":
-            result = self.capture_and_save_frame(
-                session_id=(inputs or {}).get("session_id", "lab"),
-                prefix=(inputs or {}).get("prefix", "frame"),
-            )
+            with self.camera_lock:
+                result = self.capture_and_save_frame(
+                    session_id=(inputs or {}).get("session_id", "lab"),
+                    prefix=(inputs or {}).get("prefix", "frame"),
+                )
+        elif name in camera_tools:
+            with self.camera_lock:
+                if self.live_camera is not None:
+                    try:
+                        from robot import tools as toolmod
+
+                        toolmod._camera = self.live_camera
+                    except Exception:
+                        pass
+                result = execute_tool(name=name, inputs=inputs, robot=self.robot, policy=self.policy)
         else:
             result = execute_tool(name=name, inputs=inputs, robot=self.robot, policy=self.policy)
         evt = {

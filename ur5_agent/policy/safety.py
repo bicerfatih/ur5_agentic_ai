@@ -19,7 +19,23 @@ MOTION_TOOLS = {
     "move_forward",
     "move_backward",
     "execute_rl_policy",
+    "approach_object_once",
 }
+
+GRIPPER_TOOLS = frozenset({"open_gripper", "close_gripper", "toggle_gripper"})
+
+# During direction-check / approach goals the agent must not freestyle.
+_AGENT_BLOCKED_TOOLS = frozenset(
+    {
+        "move_home",
+        "move_joint",
+        "jog_joint",
+        "release_rtde_control",
+        "run_urp_program",
+    }
+)
+
+_GRIPPER_GOAL_WORDS = ("gripper", "open", "close", "pick", "place", "grasp", "release", "toggle")
 
 # UR robot modes: 7 = RUNNING; safety 1 = NORMAL
 ROBOT_MODE_RUNNING = 7
@@ -28,21 +44,33 @@ SAFETY_MODE_NORMAL = 1
 # Taught UR5 home pose in degrees (agent must not command this unless UI / explicit allow).
 _HOME_JOINTS_DEG = [0.0, -90.0, 0.0, -90.0, 0.0, 0.0]
 
-_AGENT_BLOCKED_TOOLS = frozenset(
-    {"move_home", "move_joint", "jog_joint", "release_rtde_control", "run_urp_program"}
-)
-
 
 @dataclass
 class PolicyEngine:
     site: SiteProfile
     _state_read_this_goal: bool = field(default=False, init=False)
+    _motions_this_goal: int = field(default=0, init=False)
+    _actions_this_goal: int = field(default=0, init=False)
+    _goal_text: str = field(default="", init=False)
+    _gripper_allowed: bool = field(default=False, init=False)
 
-    def begin_goal(self):
+    def begin_goal(self, goal: str = ""):
         self._state_read_this_goal = False
+        self._motions_this_goal = 0
+        self._actions_this_goal = 0
+        self._goal_text = (goal or "").strip().lower()
+        # Gripper only if the user clearly asked for it (not after a failed approach).
+        self._gripper_allowed = any(w in self._goal_text for w in _GRIPPER_GOAL_WORDS)
 
     def record_state_read(self):
         self._state_read_this_goal = True
+
+    def record_motion(self):
+        self._motions_this_goal += 1
+        self._actions_this_goal += 1
+
+    def record_action(self):
+        self._actions_this_goal += 1
 
     def check_robot_ready(self, robot: RobotDriver) -> dict | None:
         mode = robot.get_robot_mode()
@@ -98,6 +126,25 @@ class PolicyEngine:
                     "or ask the operator to fix the pendant."
                 ),
             }
+        if tool_name in GRIPPER_TOOLS and not self._gripper_allowed:
+            return {
+                "status": "error",
+                "reason": (
+                    "Gripper is blocked unless you explicitly say open/close/pick/place. "
+                    "Direction-check goals do one move only — no gripper."
+                ),
+            }
+        # One physical action per Run (motion or gripper) — no "and then open gripper".
+        if self._actions_this_goal >= 1 and (
+            tool_name in MOTION_TOOLS or tool_name in GRIPPER_TOOLS
+        ):
+            return {
+                "status": "error",
+                "reason": (
+                    "Only ONE action per Run (direction check). "
+                    "Click Run again for another step — no follow-up gripper/moves."
+                ),
+            }
         if tool_name == "move_joint":
             joints = inputs.get("joint_positions_deg") or []
             if self._is_home_joint_command(joints):
@@ -136,6 +183,24 @@ class PolicyEngine:
                 }
 
         if tool_name in MOTION_TOOLS:
+            # One motion per Agentic Run only (UI buttons stay free).
+            if caller == "agent":
+                if self._motions_this_goal >= 1:
+                    return {
+                        "status": "error",
+                        "reason": (
+                            "Only ONE motion per Run is allowed right now "
+                            "(direction check). Click Run again for another step."
+                        ),
+                    }
+                if tool_name == "execute_rl_policy":
+                    return {
+                        "status": "error",
+                        "reason": (
+                            "Multi-step camera_reach is disabled during direction check. "
+                            "Use approach_object_once or say 'move toward the bottle'."
+                        ),
+                    }
             if self.site.require_state_before_move and not self._state_read_this_goal:
                 return {
                     "status": "error",

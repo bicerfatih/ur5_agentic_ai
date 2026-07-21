@@ -1,12 +1,16 @@
 {
-  "mount": "eye_to_hand",
-  "comment": "Replace translation_m and rotation_rpy_rad with measured hand-eye values for your lab setup.",
-  "translation_m": [0.45, -0.12, 0.72],
-  "rotation_rpy_rad": [3.14159, 0.0, 0.0],
+  "mount": "eye_in_hand",
+  "comment": "Camera on UR5 wrist/top. Fill T_tool_camera via scripts/calibrate_hand_eye.py --auto",
+  "T_tool_camera": [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.05],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
   "intrinsics": {
-    "fx": 615.0,
-    "fy": 615.0,
-    "cx": 320.0,
-    "cy": 240.0
+    "fx": 392.0,
+    "fy": 391.0,
+    "cx": 326.0,
+    "cy": 241.0
   }
 }

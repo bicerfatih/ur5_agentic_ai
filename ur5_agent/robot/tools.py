@@ -10,6 +10,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.programs import is_program_allowed
 from config.settings import (
     ALLOWED_URP_PROGRAMS,
+    APPROACH_IMAGE_INVERT_FB,
+    APPROACH_IMAGE_INVERT_LR,
     CAMERA_TYPE,
     GRIPPER_TOGGLE_PAUSE_SEC,
     GRIPPER_TYPE,
@@ -32,7 +34,7 @@ from config.settings import (
 )
 from robot.motion_math import tool_horizontal_unit
 from robot.policies.rl_policy import ReachPolicyRunner
-from policy.safety import MOTION_TOOLS, PolicyEngine
+from policy.safety import GRIPPER_TOOLS, MOTION_TOOLS, PolicyEngine
 from robot.base import RobotDriver
 
 if CAMERA_TYPE == "realsense":
@@ -664,6 +666,199 @@ def execute_rl_policy(
     }
 
 
+def approach_object_once(
+    robot: RobotDriver,
+    target_label: str = "",
+    step_m: float = 0.03,
+    approach_offset_m: list | None = None,
+    mode: str = "image",
+) -> dict:
+    """
+    Direction check — EXACTLY one short move, then stop.
+
+    mode=image (default): move left/right/forward/back from where the object
+    sits in the camera frame (does not use hand-eye). Use this while verifying
+    directions.
+
+    mode=3d: move toward target_base_m from depth + hand-eye (needs good calib).
+    """
+    print(f"  [TOOL] approach_object_once label={target_label!r} step_m={step_m} mode={mode}")
+    cam, err = _ensure_camera()
+    if err:
+        return err
+    if _detector is None:
+        return {"status": "error", "reason": "Object detector unavailable."}
+
+    step_cap = max(0.005, min(float(step_m), 0.05))
+    mode_l = (mode or "image").strip().lower()
+    if mode_l not in ("image", "3d"):
+        mode_l = "image"
+
+    st = robot.get_full_state()
+    tcp_pose = st.get("tcp_pose") or [0.3, 0.0, 0.3, 0.0, 0.0, 0.0]
+    tcp_before = [float(v) for v in tcp_pose[:3]]
+
+    try:
+        rgbd = cam.capture_rgbd()
+    except Exception as e:
+        return {"status": "error", "reason": f"camera capture failed: {e}"}
+
+    frame = rgbd["color"]
+    h, w = frame.shape[:2]
+    meta = _detector.detect(frame)
+    tgt = _pick_detection_object(meta, target_label)
+    if tgt is None:
+        return {
+            "status": "error",
+            "reason": "No matching object in frame.",
+            "labels_seen": meta.get("labels") or [],
+        }
+
+    center = tgt.get("center") or {}
+    u = float(center.get("x", w / 2))
+    v = float(center.get("y", h / 2))
+    cx = w / 2.0
+    cy = h / 2.0
+    du = u - cx  # + = object to the right in the image
+    dv = v - cy  # + = object lower in the image
+    dead = 12.0  # pixels — ignore tiny offsets
+    # Prefer L/R whenever horizontal error is meaningful (bias vs F/B).
+    # Stops "object on the right but a bit high" from becoming move_forward.
+    prefer_lr = abs(du) >= dead and (abs(du) >= abs(dv) * 0.4 or abs(dv) < dead)
+
+    if mode_l == "image":
+        # Map image error → operator directions (uses MOTION_*_VEC).
+        if abs(du) < dead and abs(dv) < dead:
+            return {
+                "status": "done",
+                "mode": "image_direction_check",
+                "note": "Object already near image center — no move.",
+                "label": tgt.get("label"),
+                "pixel": {"u": round(u, 1), "v": round(v, 1)},
+                "image_center": {"cx": cx, "cy": cy},
+                "du_px": round(du, 1),
+                "dv_px": round(dv, 1),
+                "tcp_before": [round(x, 4) for x in tcp_before],
+                "closer": None,
+            }
+
+        if prefer_lr:
+            go_right = (du > 0) ^ APPROACH_IMAGE_INVERT_LR
+            tool_name = "move_right" if go_right else "move_left"
+            axis = MOTION_RIGHT_VEC if go_right else MOTION_LEFT_VEC
+            why = (
+                f"object is {'right' if du > 0 else 'left'} of image center by {abs(du):.0f}px"
+                f"{' (L/R inverted)' if APPROACH_IMAGE_INVERT_LR else ''}"
+            )
+        else:
+            go_back = (dv > 0) ^ APPROACH_IMAGE_INVERT_FB
+            tool_name = "move_backward" if go_back else "move_forward"
+            axis = MOTION_BACKWARD_VEC if go_back else MOTION_FORWARD_VEC
+            why = (
+                f"object is {'lower' if dv > 0 else 'higher'} in image by {abs(dv):.0f}px"
+                f"{' (F/B inverted)' if APPROACH_IMAGE_INVERT_FB else ''}"
+            )
+
+        dx, dy, dz = axis[0] * step_cap, axis[1] * step_cap, axis[2] * step_cap
+        report = robot.move_tcp_relative(dx=dx, dy=dy, dz=dz)
+        st2 = robot.get_full_state()
+        tcp_after = [float(v) for v in (st2.get("tcp_pose") or tcp_pose)[:3]]
+
+        return {
+            "status": "done",
+            "mode": "image_direction_check",
+            "label": tgt.get("label"),
+            "confidence": tgt.get("confidence"),
+            "pixel": {"u": round(u, 1), "v": round(v, 1)},
+            "du_px": round(du, 1),
+            "dv_px": round(dv, 1),
+            "decision": tool_name,
+            "why": why,
+            "step_commanded_cm": [round(dx * 100, 1), round(dy * 100, 1), round(dz * 100, 1)],
+            "tcp_before": [round(x, 4) for x in tcp_before],
+            "tcp_after": [round(x, 4) for x in tcp_after],
+            "motion_report": report,
+            "note": (
+                "ONE image-based step (hand-eye not used). "
+                "If the arm moved the wrong way vs the object on screen, tell us which way. "
+                "Ask again for another step."
+            ),
+        }
+
+    # ── mode=3d (hand-eye) ─────────────────────────────────
+    calib, calib_err = _ensure_hand_eye()
+    if calib_err:
+        return calib_err
+    depth = rgbd.get("depth")
+    if depth is None:
+        return {"status": "error", "reason": "Depth unavailable. Set CAMERA_DEPTH_ENABLED=true."}
+
+    offset = _parse_xyz_triplet(
+        approach_offset_m,
+        _parse_xyz_triplet(REACH_APPROACH_OFFSET_M, [0.0, 0.0, 0.05]),
+    )
+    est = estimate_object_target_base(
+        obj=tgt,
+        depth_image=depth,
+        depth_scale=float(rgbd.get("depth_scale", 0.001)),
+        intrinsics=rgbd.get("intrinsics") or {},
+        calib=calib,
+        tcp_pose=tcp_pose if calib.mount == "eye_in_hand" else None,
+        approach_offset_m=offset,
+    )
+    if est is None or "target_base_m" not in est:
+        return {
+            "status": "error",
+            "reason": (est or {}).get("error", "Could not estimate 3D target."),
+            "label": tgt.get("label"),
+        }
+
+    target = [float(v) for v in est["target_base_m"][:3]]
+    err_vec = [target[i] - tcp_before[i] for i in range(3)]
+    dist_before = sum(v * v for v in err_vec) ** 0.5
+    if dist_before < 0.008:
+        return {
+            "status": "done",
+            "mode": "3d_direction_check",
+            "note": "Already within 8 mm of 3D target — no move.",
+            "label": tgt.get("label"),
+            "tcp_before": [round(v, 4) for v in tcp_before],
+            "target_base_m": [round(v, 4) for v in target],
+            "dist_before_m": round(dist_before, 5),
+            "closer": None,
+        }
+
+    scale = min(1.0, step_cap / dist_before)
+    dx, dy, dz = err_vec[0] * scale, err_vec[1] * scale, err_vec[2] * scale
+    report = robot.move_tcp_relative(dx=dx, dy=dy, dz=dz)
+
+    st2 = robot.get_full_state()
+    tcp_after = [float(v) for v in (st2.get("tcp_pose") or tcp_pose)[:3]]
+    dist_after = sum((target[i] - tcp_after[i]) ** 2 for i in range(3)) ** 0.5
+    closer = dist_after < dist_before - 0.001
+
+    return {
+        "status": "done",
+        "mode": "3d_direction_check",
+        "label": tgt.get("label"),
+        "confidence": tgt.get("confidence"),
+        "tcp_before": [round(v, 4) for v in tcp_before],
+        "target_base_m": [round(v, 4) for v in target],
+        "delta_toward_target_cm": [round(v * 100, 1) for v in err_vec],
+        "step_commanded_cm": [round(dx * 100, 1), round(dy * 100, 1), round(dz * 100, 1)],
+        "tcp_after": [round(v, 4) for v in tcp_after],
+        "dist_before_cm": round(dist_before * 100, 1),
+        "dist_after_cm": round(dist_after * 100, 1),
+        "closer": closer,
+        "pose3d": est,
+        "motion_report": report,
+        "note": (
+            "ONE 3D step. closer=true means hand-eye direction is usable. "
+            "Prefer mode=image until hand-eye is recalibrated."
+        ),
+    }
+
+
 def execute_tool(
     name: str,
     inputs: dict,
@@ -714,12 +909,23 @@ def execute_tool(
         "reconnect_rtde_control": lambda: reconnect_rtde_control(robot),
         "get_camera_frame": lambda: get_camera_frame(robot, **inputs),
         "detect_objects": lambda: detect_objects(robot, **inputs),
+        "approach_object_once": lambda: approach_object_once(robot, **inputs),
         "execute_rl_policy": lambda: execute_rl_policy(robot, **inputs),
     }
     fn = dispatch.get(name)
     if fn is None:
         return {"error": f"Unknown tool: {name}"}
-    return fn()
+    result = fn()
+    if isinstance(result, dict) and result.get("status") != "error":
+        if name in MOTION_TOOLS:
+            if name == "approach_object_once":
+                if "step_commanded_cm" in result:
+                    policy.record_motion()
+            else:
+                policy.record_motion()
+        elif name in GRIPPER_TOOLS:
+            policy.record_action()
+    return result
 
 
 TOOL_SCHEMAS = [
@@ -940,11 +1146,39 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "approach_object_once",
+        "description": (
+            "PREFERRED for 'move toward bottle/cup/object'. Detects the object and takes "
+            "EXACTLY ONE short step (default 3 cm) then stops. Default mode=image uses "
+            "where the object is in the camera picture (left/right on screen) — ignores "
+            "hand-eye. Use mode=3d only after hand-eye is verified. "
+            "Do NOT call execute_rl_policy for simple approach tests."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_label": {
+                    "type": "string",
+                    "description": "Object name substring, e.g. bottle, cup, tv",
+                },
+                "step_m": {
+                    "type": "number",
+                    "description": "Max step length in meters (default 0.03 = 3 cm, max 0.05)",
+                },
+                "mode": {
+                    "type": "string",
+                    "description": "image (default, pixel direction) or 3d (hand-eye target)",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "execute_rl_policy",
         "description": (
-            "Run RL policy for safe 3D Cartesian reach. reach_free_space uses target_tcp; "
-            "camera_reach detects object, estimates base-frame XYZ from depth + calibration, "
-            "then RL steps in dx/dy/dz until within reach_done_dist_m."
+            "Multi-step RL reach loop — only when the user explicitly asks for continuous "
+            "reach / trajectory. Prefer approach_object_once for single direction checks. "
+            "camera_reach detects object then steps until near target."
         ),
         "input_schema": {
             "type": "object",

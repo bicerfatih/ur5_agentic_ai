@@ -57,6 +57,7 @@ class RealSenseCamera:
             depth_sensor = self._profile.get_device().first_depth_sensor()
             self._depth_scale = float(depth_sensor.get_depth_scale())
         self._intrinsics = self._read_color_intrinsics()
+        self.warmup(frames=15)
 
     def disconnect(self):
         if self._pipeline:
@@ -67,6 +68,23 @@ class RealSenseCamera:
             self._pipeline = None
             self._profile = None
             self._align = None
+
+    def warmup(self, frames: int = 15, timeout_ms: int = 2000) -> int:
+        """Drain the pipeline until frames are flowing (avoids first-frame stalls)."""
+        if self._pipeline is None:
+            return 0
+        ok = 0
+        for _ in range(max(1, int(frames))):
+            try:
+                self._pipeline.wait_for_frames(timeout_ms=timeout_ms)
+                ok += 1
+            except Exception:
+                pass
+        return ok
+
+    def reconnect(self):
+        self.disconnect()
+        self.connect()
 
     def _ensure_connected(self):
         if self._pipeline is None:

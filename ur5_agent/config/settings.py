@@ -19,7 +19,8 @@ MAX_LINEAR_ACCEL = 0.2
 MAX_SINGLE_MOVE_DOWN = 0.25
 
 # ── Semantic move directions (robot BASE frame, not tool frame) ──
-# Unit vectors as "dx,dy,dz". Override per cell if "right" / "down" feel wrong.
+# Unit vectors as "dx,dy,dz". Lab cell: operator-facing layout where
+# base -Y feels like "forward" and base -X feels like "left".
 def _motion_vec(env_key: str, default: str) -> tuple[float, float, float]:
     raw = os.environ.get(env_key, default).strip()
     parts = [float(x.strip()) for x in raw.split(",")]
@@ -30,14 +31,26 @@ def _motion_vec(env_key: str, default: str) -> tuple[float, float, float]:
 
 MOTION_UP_VEC = _motion_vec("MOTION_UP_VEC", "0,0,1")
 MOTION_DOWN_VEC = _motion_vec("MOTION_DOWN_VEC", "0,0,-1")
-MOTION_RIGHT_VEC = _motion_vec("MOTION_RIGHT_VEC", "0,1,0")
-MOTION_LEFT_VEC = _motion_vec("MOTION_LEFT_VEC", "0,-1,0")
-MOTION_FORWARD_VEC = _motion_vec("MOTION_FORWARD_VEC", "1,0,0")
-MOTION_BACKWARD_VEC = _motion_vec("MOTION_BACKWARD_VEC", "-1,0,0")
+MOTION_FORWARD_VEC = _motion_vec("MOTION_FORWARD_VEC", "0,-1,0")
+MOTION_BACKWARD_VEC = _motion_vec("MOTION_BACKWARD_VEC", "0,1,0")
+MOTION_LEFT_VEC = _motion_vec("MOTION_LEFT_VEC", "1,0,0")
+MOTION_RIGHT_VEC = _motion_vec("MOTION_RIGHT_VEC", "-1,0,0")
 
-# Horizontal moves: "tool_horizontal" = left/right/forward/back along gripper axes
-# projected to the table plane (Z fixed); "base" = robot base X/Y only.
-MOTION_HORIZONTAL_MODE = os.environ.get("MOTION_HORIZONTAL_MODE", "tool_horizontal").strip().lower()
+# Horizontal moves: "base" = robot base X/Y (clearest for most cells).
+# "tool_horizontal" = left/right along gripper axes (often feels reversed).
+MOTION_HORIZONTAL_MODE = os.environ.get("MOTION_HORIZONTAL_MODE", "base").strip().lower()
+
+# Image-based approach (eye-in-hand): map pixel offset → move_left/right/forward/back.
+# Wrist cams are often mirrored vs operator left/right — default invert LR.
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+APPROACH_IMAGE_INVERT_LR = _env_bool("APPROACH_IMAGE_INVERT_LR", False)
+APPROACH_IMAGE_INVERT_FB = _env_bool("APPROACH_IMAGE_INVERT_FB", False)
 
 # ── Safe home position (joint angles in radians) ───────
 HOME_JOINTS = [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0]
@@ -139,13 +152,20 @@ HAND_EYE_CALIB_PATH = os.environ.get(
     "HAND_EYE_CALIB_PATH",
     os.path.join(os.path.dirname(__file__), "../../data/calibration/hand_eye.json"),
 )
+# Optional optical-axis flips before hand-eye (e.g. "x", "y", "xy") if reach goes the wrong way.
+HAND_EYE_OPTICAL_FLIP = os.environ.get("HAND_EYE_OPTICAL_FLIP", "").strip().lower()
 REACH_DONE_DIST_M = float(os.environ.get("REACH_DONE_DIST_M", "0.008"))
 REACH_APPROACH_OFFSET_M = os.environ.get("REACH_APPROACH_OFFSET_M", "0,0,0.05")
 
 # ── Vision (YOLO) ───────────────────────────────────────
 YOLO_ENABLED = os.environ.get("YOLO_ENABLED", "true").lower() in ("1", "true", "yes")
 YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "").strip()
-YOLO_CONF = float(os.environ.get("YOLO_CONF", "0.35"))
+# Lower conf helps small / distant objects (was 0.35 — often missed ~40 cm targets).
+YOLO_CONF = float(os.environ.get("YOLO_CONF", "0.20"))
+# Inference size; larger = better for far/small objects (slower). 640 | 960 | 1280
+YOLO_IMGSZ = int(os.environ.get("YOLO_IMGSZ", "960"))
+# Max detections per frame
+YOLO_MAX_DET = int(os.environ.get("YOLO_MAX_DET", "50"))
 
 # ── RL (camera-first policy execution) ──────────────────
 RL_POLICY_PATH = os.environ.get("RL_POLICY_PATH", "").strip()

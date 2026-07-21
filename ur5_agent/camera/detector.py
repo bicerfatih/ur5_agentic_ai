@@ -7,7 +7,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from config.settings import YOLO_CONF, YOLO_ENABLED, YOLO_MODEL_PATH
+from config.settings import YOLO_CONF, YOLO_ENABLED, YOLO_IMGSZ, YOLO_MAX_DET, YOLO_MODEL_PATH
 
 
 class ObjectDetector:
@@ -43,13 +43,14 @@ class ObjectDetector:
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         boxes = []
         h, w = frame.shape[:2]
-        min_area = max(1200, int(0.002 * w * h))
+        # Allow smaller blobs so farther objects aren't discarded.
+        min_area = max(400, int(0.0008 * w * h))
         for c in contours:
             x, y, bw, bh = cv2.boundingRect(c)
             if bw * bh < min_area:
                 continue
             boxes.append((x, y, bw, bh))
-        boxes = sorted(boxes, key=lambda b: b[2] * b[3], reverse=True)[:8]
+        boxes = sorted(boxes, key=lambda b: b[2] * b[3], reverse=True)[:12]
 
         objects = []
         for i, (x, y, bw, bh) in enumerate(boxes, 1):
@@ -78,7 +79,13 @@ class ObjectDetector:
             return self._detect_contour(frame)
 
         try:
-            results = model.predict(source=frame, conf=YOLO_CONF, verbose=False)
+            results = model.predict(
+                source=frame,
+                conf=YOLO_CONF,
+                imgsz=YOLO_IMGSZ,
+                max_det=YOLO_MAX_DET,
+                verbose=False,
+            )
         except Exception:
             return self._detect_contour(frame)
 

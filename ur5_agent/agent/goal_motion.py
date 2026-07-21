@@ -45,6 +45,34 @@ _COMPOUND = re.compile(
     re.IGNORECASE,
 )
 
+_APPROACH = re.compile(
+    r"(?:keep\s+)?(?:moving|move|go|approach)\s+"
+    r"(?:toward|towards|to(?:ward|wards)?)\s+(?:the\s+)?([a-z][a-z0-9_\- ]{0,40})",
+    re.IGNORECASE,
+)
+_APPROACH_ALT = re.compile(
+    r"^approach\s+(?:the\s+)?([a-z][a-z0-9_\- ]{0,40})$",
+    re.IGNORECASE,
+)
+_STOP_WORDS = frozenset(
+    {
+        "left",
+        "right",
+        "up",
+        "down",
+        "forward",
+        "back",
+        "backward",
+        "home",
+        "it",
+        "that",
+        "this",
+        "object",
+        "carefully",
+        "slowly",
+    }
+)
+
 
 def _normalize_goal(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower()).strip(".,!?;:")
@@ -66,11 +94,32 @@ def _tool_for_direction(direction: str) -> str | None:
     return _DIR_TOOLS.get(direction.lower())
 
 
+def parse_approach_object_goal(goal: str) -> list[dict] | None:
+    """Map 'move toward the bottle' → one approach_object_once (image mode)."""
+    text = _normalize_goal(goal)
+    if not text:
+        return None
+    match = _APPROACH.search(text) or _APPROACH_ALT.match(text)
+    if not match:
+        return None
+    label = re.sub(r"\s+", " ", match.group(1).strip()).strip(".,!")
+    label = re.split(r"\b(please|now|again|carefully|slowly)\b", label)[0].strip()
+    if not label or label in _STOP_WORDS or label in _DIR_TOOLS:
+        return None
+    parts = [p for p in label.split() if p not in _STOP_WORDS][:3]
+    if not parts:
+        return None
+    label = " ".join(parts)
+    return [
+        {
+            "name": "approach_object_once",
+            "arguments": {"target_label": label, "step_m": 0.03, "mode": "image"},
+        }
+    ]
+
+
 def parse_cartesian_motion_goal(goal: str) -> list[dict] | None:
-    """
-    Map a simple goal like "move left 20 cm" to one coordinated Cartesian tool call.
-    Returns None when the goal is compound or not a single distance + direction.
-    """
+    """Map 'move left 20 cm' to one Cartesian tool call."""
     text = _normalize_goal(goal)
     if not text or _COMPOUND.search(text):
         return None
@@ -96,3 +145,8 @@ def parse_cartesian_motion_goal(goal: str) -> list[dict] | None:
         return [{"name": tool, "arguments": {"distance_m": round(distance_m, 4)}}]
 
     return None
+
+
+def parse_direct_motion_goal(goal: str) -> list[dict] | None:
+    """Cartesian distance move, or single image-based approach — no LLM."""
+    return parse_cartesian_motion_goal(goal) or parse_approach_object_goal(goal)

@@ -109,6 +109,17 @@ def pixel_depth_to_camera_xyz(
     x = (float(u) - cx) * depth_m / fx
     y = (float(v) - cy) * depth_m / fy
     z = depth_m
+    # Optional flips for mounts where optical axes feel mirrored in the cell.
+    try:
+        from config.settings import HAND_EYE_OPTICAL_FLIP
+
+        flip = (HAND_EYE_OPTICAL_FLIP or "").lower()
+        if "x" in flip:
+            x = -x
+        if "y" in flip:
+            y = -y
+    except Exception:
+        pass
     return np.array([x, y, z], dtype=np.float64)
 
 
