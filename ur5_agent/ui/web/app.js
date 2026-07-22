@@ -17,6 +17,7 @@ const detectToggle = $("detect-toggle");
 
 let latestJoints = [0, -1.57, 0, -1.57, 0, 0];
 let lastTelemetryState = null;
+let lastGoalStatusSig = null;
 let digitalTwin = null;
 let liveFeedTimer = null;
 let detectEnabled = false;
@@ -132,8 +133,18 @@ function renderState(payload) {
     renderDetectionLabels(payload.detection);
   }
   const gs = payload.goal_status || {};
-  if (typeof window.onAgentGoalStatus === "function") {
-    window.onAgentGoalStatus(gs, payload.events || []);
+  const goalSig = [
+    gs.running ? 1 : 0,
+    gs.started_at ?? "",
+    gs.ended_at ?? "",
+    gs.error ?? "",
+    gs.result ?? "",
+  ].join("|");
+  if (goalSig !== lastGoalStatusSig) {
+    lastGoalStatusSig = goalSig;
+    if (typeof window.onAgentGoalStatus === "function") {
+      window.onAgentGoalStatus(gs, payload.events || []);
+    }
   }
   if (typeof window.onManualTelemetry === "function") {
     window.onManualTelemetry(payload);
@@ -253,19 +264,65 @@ async function submitAgentGoal(goalText) {
     goalStatusEl.textContent = "Goal is empty.";
     return { ok: false, reason: "empty" };
   }
-  goalStatusEl.textContent = "Submitting goal...";
-  const res = await fetch("/api/goal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ goal }),
-  });
-  const body = await res.json();
-  if (!res.ok) {
-    goalStatusEl.textContent = body.detail || "Failed to submit goal.";
-    return { ok: false, reason: body.detail };
+  if (submitAgentGoal._busy) {
+    goalStatusEl.textContent = "A goal is already running…";
+    return { ok: false, reason: "busy" };
   }
-  goalStatusEl.textContent = `Accepted: ${goal}`;
-  return { ok: true, goal };
+  submitAgentGoal._busy = true;
+  const submitTs = Date.now() / 1000;
+  try {
+    goalStatusEl.textContent = "Submitting goal...";
+    const res = await fetch("/api/goal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      goalStatusEl.textContent = body.detail || "Failed to submit goal.";
+      return { ok: false, reason: body.detail };
+    }
+    goalStatusEl.textContent = `Running: ${goal}`;
+    if (typeof window.speakGoalUpdate === "function") {
+      window.speakGoalUpdate("start", { goal });
+    }
+
+    // Voice finish is owned here (not telemetry) so extra console tabs stay silent.
+    let sawRunning = false;
+    for (let i = 0; i < 600; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      let st;
+      try {
+        const gr = await fetch("/api/goal_status");
+        if (!gr.ok) continue;
+        st = await gr.json();
+      } catch {
+        continue;
+      }
+      if (st.running) {
+        sawRunning = true;
+        continue;
+      }
+      const finishedThis =
+        sawRunning ||
+        (st.ended_at != null &&
+          Number(st.ended_at) >= submitTs - 1 &&
+          (st.goal === goal || !st.goal));
+      if (!finishedThis) continue;
+      if (typeof window.speakGoalUpdate === "function") {
+        window.speakGoalUpdate("end", st);
+      }
+      if (st.error) goalStatusEl.textContent = `Error: ${st.error}`;
+      else {
+        const note = st.note ? ` — ${st.note}` : "";
+        goalStatusEl.textContent = `Finished: ${st.goal || goal}${note}`;
+      }
+      break;
+    }
+    return { ok: true, goal };
+  } finally {
+    submitAgentGoal._busy = false;
+  }
 }
 
 window.submitAgentGoal = submitAgentGoal;
@@ -294,18 +351,41 @@ async function pullTelemetry(site) {
 
 let telemetryPollTimer = null;
 let telemetryWs = null;
+let telemetryWsAlive = false;
+let appInited = false;
+
+function startTelemetryPoll(site) {
+  if (telemetryPollTimer) clearInterval(telemetryPollTimer);
+  telemetryPollTimer = setInterval(() => {
+    // Avoid duplicate goal/speech updates while WebSocket is healthy.
+    if (telemetryWsAlive) return;
+    pullTelemetry(site);
+  }, 1000);
+}
 
 function connectTelemetryWs(site) {
+  if (telemetryWs) {
+    try {
+      telemetryWs.onclose = null;
+      telemetryWs.close();
+    } catch (_) {
+      /* ignore */
+    }
+    telemetryWs = null;
+  }
+  telemetryWsAlive = false;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws/telemetry`);
   telemetryWs = ws;
 
   ws.onopen = () => {
+    telemetryWsAlive = true;
     if (digitalTwin?.ready && lastTelemetryState) {
       digitalTwin.updateFromState(lastTelemetryState);
     }
   };
   ws.onmessage = (ev) => {
+    telemetryWsAlive = true;
     const payload = JSON.parse(ev.data);
     payload.site = site;
     renderState(payload);
@@ -313,12 +393,14 @@ function connectTelemetryWs(site) {
   };
   ws.onclose = () => {
     if (telemetryWs !== ws) return;
+    telemetryWsAlive = false;
     if ($("twin-hud")) {
       $("twin-hud").textContent = "Live telemetry: HTTP (1s) — reconnecting WebSocket…";
     }
     setTimeout(() => connectTelemetryWs(site), 2500);
   };
   ws.onerror = () => {
+    telemetryWsAlive = false;
     if ($("twin-hud")) {
       $("twin-hud").textContent = "Live telemetry: HTTP (1s) — WebSocket retry…";
     }
@@ -326,15 +408,15 @@ function connectTelemetryWs(site) {
 }
 
 async function init() {
+  if (appInited) return;
+  appInited = true;
   ensureTwin();
   const cfg = await (await fetch("/api/config")).json();
   const site = cfg.site;
   sitePill.textContent = `site: ${site}`;
 
   await pullTelemetry(site);
-  if (telemetryPollTimer) clearInterval(telemetryPollTimer);
-  telemetryPollTimer = setInterval(() => pullTelemetry(site), 1000);
-
+  startTelemetryPoll(site);
   connectTelemetryWs(site);
 
   setLiveFeed(true);

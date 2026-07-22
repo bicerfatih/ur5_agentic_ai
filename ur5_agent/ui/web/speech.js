@@ -23,9 +23,14 @@
     browserInterim: "",
     selectedDeviceId: localStorage.getItem("speech_mic_id") || "",
     lastGoalRunning: false,
+    announcedStarts: Object.create(null),
+    announcedEnds: Object.create(null),
+    speakTimer: null,
+    speakGen: 0,
     micRefreshBusy: false,
     recordStarting: false,
     transcribing: false,
+    uiWired: false,
   };
 
   function $(id) {
@@ -71,13 +76,85 @@
 
   function speak(text) {
     if (!state.speakReplies || !window.speechSynthesis || !text) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1;
-    u.pitch = 1;
-    u.lang = "en-US";
-    window.speechSynthesis.speak(u);
+    const now = Date.now();
+    const msg = String(text);
+    // Hard cooldown: never re-speak same (or any) line in a short window.
+    if (now - (state.lastSpeakAt || 0) < 2500) return;
+    if (msg === state.lastSpeakText && now - (state.lastSpeakAt || 0) < 10000) return;
+    state.lastSpeakText = msg;
+    state.lastSpeakAt = now;
+    state.speakGen += 1;
+    const gen = state.speakGen;
+    if (state.speakTimer) {
+      clearTimeout(state.speakTimer);
+      state.speakTimer = null;
+    }
+    try {
+      window.speechSynthesis.cancel();
+    } catch (_) {
+      /* ignore */
+    }
+    state.speakTimer = setTimeout(() => {
+      state.speakTimer = null;
+      if (gen !== state.speakGen) return;
+      if (!state.speakReplies || !window.speechSynthesis) return;
+      try {
+        window.speechSynthesis.cancel();
+      } catch (_) {
+        /* ignore */
+      }
+      const u = new SpeechSynthesisUtterance(msg);
+      u.rate = 1.05;
+      u.pitch = 1;
+      u.lang = "en-US";
+      // Chromium Linux often re-queues the same utterance; pause/resume clears it.
+      window.speechSynthesis.speak(u);
+      try {
+        window.speechSynthesis.pause();
+        window.speechSynthesis.resume();
+      } catch (_) {
+        /* ignore */
+      }
+    }, 30);
   }
+
+  function onGoalStatus(gs, events) {
+    // Status text only — voice is owned by submitAgentGoal (one tab, one shot).
+    if (!gs) return;
+    if (gs.running) {
+      state.lastGoalRunning = true;
+      return;
+    }
+    if (state.lastGoalRunning && gs.goal) {
+      state.lastGoalRunning = false;
+      if (gs.error) setStatus(`Goal error: ${gs.error}`, "error");
+      else if (gs.ended_at) {
+        const note = gs.note ? ` ${gs.note}` : "";
+        setStatus(`Finished: ${gs.goal}${note}`, "ok");
+      }
+    }
+  }
+
+  window.speakGoalUpdate = function speakGoalUpdate(phase, gs, events) {
+    if (!state.speakReplies) return;
+    if (phase === "start") {
+      speak("Okay, executing the task.");
+      return;
+    }
+    if (phase === "end") {
+      if (gs?.error) {
+        speak("Task failed.");
+        setStatus(`Goal error: ${gs.error}`, "error");
+        return;
+      }
+      const summary = taskSummaryForSpeech(gs || {}, events || null);
+      speak(summary ? `Task finished. ${summary}.` : "Task finished.");
+      if (gs?.goal) {
+        const note = gs.note ? ` ${gs.note}` : "";
+        setStatus(`Finished: ${gs.goal}${note}`, "ok");
+      }
+    }
+  };
 
   const MOTION_DIR = {
     move_up: "up",
@@ -175,26 +252,6 @@
 
   function taskSummaryForSpeech(gs, events) {
     return summarizeFromEvents(events, gs?.started_at) || summarizeFromGoal(gs?.goal);
-  }
-
-  function onGoalStatus(gs, events) {
-    if (!gs) return;
-    if (gs.running && !state.lastGoalRunning) {
-      state.lastGoalRunning = true;
-      speak("Okay, executing the task.");
-    }
-    if (!gs.running && state.lastGoalRunning) {
-      state.lastGoalRunning = false;
-      if (gs.error) {
-        speak("Task failed.");
-        setStatus(`Goal error: ${gs.error}`, "error");
-      } else if (gs.goal) {
-        const note = gs.note ? ` ${gs.note}` : "";
-        const summary = taskSummaryForSpeech(gs, events);
-        speak(summary ? `Task finished. ${summary}.` : "Task finished.");
-        setStatus(`Finished: ${gs.goal}${note}`, "ok");
-      }
-    }
   }
 
   window.onAgentGoalStatus = function (goalStatus, events) {
@@ -572,6 +629,8 @@
   }
 
   function wireUi() {
+    if (state.uiWired) return;
+    state.uiWired = true;
     $("speech-mode-record")?.addEventListener("click", () => {
       state.mode = "record";
       localStorage.setItem("speech_mode", "record");

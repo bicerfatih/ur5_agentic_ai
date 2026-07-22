@@ -211,16 +211,27 @@ class UR5Driver(RobotDriver):
         return {"status": "done", "notes": notes}
 
     def reconnect_rtde_control(self) -> dict:
-        """Reconnect RTDE control after .urp (for agent move_* tools)."""
-        if self.rtde_c and self.rtde_c.isConnected():
-            return {"status": "done", "message": "already connected"}
+        """Force a fresh RTDE control script (isConnected can be stale after .urp stop)."""
+        notes = []
+        if self.rtde_c:
+            try:
+                self.rtde_c.stopScript()
+            except Exception as e:
+                notes.append(f"stopScript: {e}")
+            try:
+                self.rtde_c.disconnect()
+            except Exception as e:
+                notes.append(f"disconnect: {e}")
+            self.rtde_c = None
+            time.sleep(0.3)
         try:
             self.rtde_c = self._connect_control()
-            return {"status": "done", "message": "rtde control reconnected"}
+            return {"status": "done", "message": "rtde control reconnected", "notes": notes}
         except Exception as e:
             return {
                 "status": "error",
                 "reason": str(e),
+                "notes": notes,
                 "hint": (
                     "On pendant: stop fly2.urp, run External Control program again. "
                     "If 'RTDE registers in use', disable EtherNet/IP/PROFINET/MODBUS on robot."
@@ -425,7 +436,16 @@ class UR5Driver(RobotDriver):
         self._ensure_control()
         speed = min(speed, MAX_JOINT_SPEED)
         accel = min(accel, MAX_JOINT_ACCEL)
-        self.rtde_c.moveJ(joints, speed, accel)
+        ok = self.rtde_c.moveJ(joints, speed, accel)
+        if ok is False:
+            reconnect = self.reconnect_rtde_control()
+            if reconnect.get("status") != "error":
+                ok = self.rtde_c.moveJ(joints, speed, accel)
+        if ok is False:
+            raise RuntimeError(
+                "moveJ rejected by the controller. On the pendant: start External Control "
+                "(or re-run reconnect_rtde_control) and ensure no other RTDE client holds control."
+            )
 
     def _poll_tcp_motion_locked(self, start: list, target: list, timeout: float = 6.0) -> dict:
         """Poll TCP after moveL. Caller must hold _rtde_lock; never reconnects receive."""
