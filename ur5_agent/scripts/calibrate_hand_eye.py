@@ -251,6 +251,47 @@ def solve_eye_in_hand(
 # ── Modes ────────────────────────────────────────────────
 
 
+def _pose_grid(step: float, n: int) -> list[tuple[float, float, float]]:
+    """Relative TCP deltas from current hover; denser grid → more samples in FOV."""
+    s = step
+    hs = step * 0.5
+    qs = step * 0.35
+    grid = [
+        (0.0, 0.0, 0.0),
+        (s, 0.0, 0.0),
+        (-s, 0.0, 0.0),
+        (0.0, s, 0.0),
+        (0.0, -s, 0.0),
+        (hs, hs, 0.0),
+        (hs, -hs, 0.0),
+        (-hs, hs, 0.0),
+        (-hs, -hs, 0.0),
+        (qs, 0.0, s * 0.35),
+        (-qs, 0.0, s * 0.35),
+        (0.0, qs, s * 0.35),
+        (0.0, -qs, s * 0.35),
+        (hs, 0.0, -s * 0.25),
+        (0.0, hs, -s * 0.25),
+        (-hs, 0.0, s * 0.2),
+        (0.0, -hs, s * 0.2),
+        (qs, qs, s * 0.25),
+        (qs, -qs, s * 0.25),
+        (-qs, qs, 0.0),
+        (-qs, -qs, 0.0),
+        (s * 0.75, 0.0, 0.0),
+        (0.0, s * 0.75, 0.0),
+        (-s * 0.75, 0.0, 0.0),
+        (0.0, -s * 0.75, 0.0),
+    ]
+    # Absolute-style extras as small local orbits if more poses requested.
+    while len(grid) < n:
+        i = len(grid)
+        ang = (i * 0.7) % 6.2832
+        r = qs + (i % 3) * 0.01
+        grid.append((r * float(np.cos(ang)), r * float(np.sin(ang)), (i % 2) * 0.02))
+    return grid[:n]
+
+
 def run_auto(args):
     """Eye-in-hand: teach table marker, then robot moves while looking at it."""
     from camera.realsense_camera import RealSenseCamera
@@ -264,7 +305,10 @@ def run_auto(args):
     print("=" * 60)
     print("1) Put the ArUco marker FLAT ON THE TABLE (not on the gripper).")
     print("2) Pendant: Remote ON · External Control PLAYING · e-stop ready.")
-    print("3) You will TEACH the marker by touching it with the TCP tip.")
+    if args.reuse_marker:
+        print("3) Reusing previous marker_base (no TEACH). Keep marker in the same place.")
+    else:
+        print("3) You will TEACH the marker by touching it with the TCP tip.")
     print()
 
     cam = RealSenseCamera(depth_enabled=True)
@@ -288,27 +332,71 @@ def run_auto(args):
         robot.disconnect()
         return
 
-    # ── Teach marker position in base frame ──
-    print("\n── TEACH MARKER ──")
-    print("Move the TCP so the tool tip touches the CENTER of the paper marker.")
-    print("(Freedrive in Local, then switch back to Remote + External Control,")
-    print(" OR jog with the ops console / pendant while this waits.)")
-    while True:
-        cmd = input("When TCP is on the marker center, type TEACH: ").strip().upper()
-        if cmd == "TEACH":
-            break
-        if cmd in ("Q", "QUIT"):
+    # ── Teach / reuse marker position in base frame ──
+    existing_samples: list[dict] = []
+    if args.reuse_marker:
+        marker_base = None
+        if os.path.isfile(args.out):
+            with open(args.out, encoding="utf-8") as f:
+                prev = json.load(f)
+            mb = prev.get("marker_base_m")
+            if mb and len(mb) == 3:
+                marker_base = np.asarray(mb, dtype=np.float64)
+        if marker_base is None and os.path.isfile(SAMPLES_PATH):
+            with open(SAMPLES_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            mb = data.get("marker_base")
+            if mb and len(mb) == 3:
+                marker_base = np.asarray(mb, dtype=np.float64)
+            if args.append:
+                existing_samples = list(data.get("samples") or [])
+        if marker_base is None:
+            print("ERROR: --reuse-marker but no marker_base in hand_eye.json / samples.")
             cam.disconnect()
             robot.disconnect()
             return
+        print(f"Reusing marker base XYZ = {[round(float(v), 4) for v in marker_base]}")
+        # Move to hover above marker (keep orientation).
+        now = list(robot.get_tcp_pose())
+        hover = [
+            float(marker_base[0]),
+            float(marker_base[1]),
+            float(marker_base[2]) + 0.08,
+            now[3],
+            now[4],
+            now[5],
+        ]
+        print(f"Moving to hover above marker: {[round(v, 4) for v in hover[:3]]}")
+        try:
+            robot.move_linear(hover, speed=0.12, accel=0.3)
+        except Exception as e:
+            print(f"ERROR: could not reach hover: {e}")
+            cam.disconnect()
+            robot.disconnect()
+            return
+        home = list(robot.get_tcp_pose())
+    else:
+        print("\n── TEACH MARKER ──")
+        print("Move the TCP so the tool tip touches the CENTER of the paper marker.")
+        print("(Freedrive in Local, then switch back to Remote + External Control,")
+        print(" OR jog with the ops console / pendant while this waits.)")
+        while True:
+            cmd = input("When TCP is on the marker center, type TEACH: ").strip().upper()
+            if cmd == "TEACH":
+                break
+            if cmd in ("Q", "QUIT"):
+                cam.disconnect()
+                robot.disconnect()
+                return
 
-    marker_base = np.asarray(robot.get_tcp_pose()[:3], dtype=np.float64)
-    print(f"Marker base XYZ = {[round(float(v), 4) for v in marker_base]}")
+        marker_base = np.asarray(robot.get_tcp_pose()[:3], dtype=np.float64)
+        print(f"Marker base XYZ = {[round(float(v), 4) for v in marker_base]}")
 
-    # Lift clear of the table so we don't crash during the grid.
-    print("Lifting +8 cm above the marker...")
-    robot.move_tcp_relative(dz=0.08, speed=0.08, accel=0.3)
-    home = list(robot.get_tcp_pose())
+        # Lift clear of the table so we don't crash during the grid.
+        print("Lifting +8 cm above the marker...")
+        robot.move_tcp_relative(dz=0.08, speed=0.08, accel=0.3)
+        home = list(robot.get_tcp_pose())
+
     print(f"Hover TCP: {[round(v, 4) for v in home[:3]]}")
 
     obs, err = capture_marker_cam(cam, args.marker_id)
@@ -318,39 +406,42 @@ def run_auto(args):
     else:
         print(f"Marker visible at pixel={obs['pixel']} depth={obs['depth_m']}m — good.")
 
-    steps = [
-        (0.0, 0.0, 0.0),
-        (step, 0.0, 0.0),
-        (-2 * step, 0.0, 0.0),
-        (step, step, 0.0),
-        (0.0, -2 * step, 0.0),
-        (step, step, 0.0),
-        (-step, 0.0, step * 0.4),
-        (0.0, 0.0, -step * 0.6),
-        (step * 0.5, -step * 0.5, step * 0.3),
-        (-step * 0.5, step * 0.5, 0.0),
-    ][:n]
+    steps = _pose_grid(step, n)
 
-    print(f"\nWill take {len(steps)} views (step={step*100:.0f} cm). Keep marker on the table.")
-    if input("Type YES to start: ").strip() != "YES":
-        print("Aborted.")
-        cam.disconnect()
-        robot.disconnect()
-        return
+    print(
+        f"\nWill take {len(steps)} views (step={step*100:.0f} cm)"
+        f"{f', keeping {len(existing_samples)} prior samples' if existing_samples else ''}."
+    )
+    print("Keep marker on the table.")
+    if not args.yes:
+        if input("Type YES to start: ").strip() != "YES":
+            print("Aborted.")
+            cam.disconnect()
+            robot.disconnect()
+            return
 
-    samples: list[dict] = []
+    samples: list[dict] = list(existing_samples)
     speed, accel = 0.1, 0.4
+    # Return to hover between skips so FOV doesn't drift away permanently.
     try:
         for i, (dx, dy, dz) in enumerate(steps, 1):
+            # Absolute offset from hover (not chained relative — avoids walk-off).
+            target = [
+                home[0] + dx,
+                home[1] + dy,
+                home[2] + dz,
+                home[3],
+                home[4],
+                home[5],
+            ]
             before = list(robot.get_tcp_pose())
-            print(f"\n[{i}/{len(steps)}] Δ=({dx:+.3f},{dy:+.3f},{dz:+.3f})")
-            if abs(dx) + abs(dy) + abs(dz) > 1e-6:
-                try:
-                    robot.move_tcp_relative(dx=dx, dy=dy, dz=dz, speed=speed, accel=accel)
-                except Exception as e:
-                    print(f"  SKIP move: {e}")
-                    continue
-            time.sleep(0.4)
+            print(f"\n[{i}/{len(steps)}] offset=({dx:+.3f},{dy:+.3f},{dz:+.3f})")
+            try:
+                robot.move_linear(target, speed=speed, accel=accel)
+            except Exception as e:
+                print(f"  SKIP move: {e}")
+                continue
+            time.sleep(0.35)
             after = list(robot.get_tcp_pose())
             moved_mm = float(np.linalg.norm(np.array(after[:3]) - np.array(before[:3]))) * 1000
             print(f"  TCP {[round(v, 4) for v in after[:3]]}  (Δ {moved_mm:.1f} mm)")
@@ -367,23 +458,20 @@ def run_auto(args):
             samples.append(sample)
             os.makedirs(CALIB_DIR, exist_ok=True)
             with open(SAMPLES_PATH, "w", encoding="utf-8") as f:
-                json.dump({"mount": "eye_in_hand", "marker_base": marker_base.tolist(), "samples": samples}, f, indent=2)
+                json.dump(
+                    {"mount": "eye_in_hand", "marker_base": marker_base.tolist(), "samples": samples},
+                    f,
+                    indent=2,
+                )
             print(f"  OK  pixel={sample['pixel']} depth={sample['depth_m']}m p_cam={sample['p_cam']}")
             if len(samples) >= 2:
                 pix = np.array([s["pixel"] for s in samples])
                 span = float(np.linalg.norm(pix.max(0) - pix.min(0)))
-                print(f"  pixel span so far: {span:.1f} px")
+                print(f"  samples={len(samples)}  pixel span so far: {span:.1f} px")
     finally:
         print("\nReturning toward hover pose...")
         try:
-            now = list(robot.get_tcp_pose())
-            robot.move_tcp_relative(
-                dx=home[0] - now[0],
-                dy=home[1] - now[1],
-                dz=home[2] - now[2],
-                speed=speed,
-                accel=accel,
-            )
+            robot.move_linear(home, speed=speed, accel=accel)
         except Exception as e:
             print(f"  (return failed: {e})")
         cam.disconnect()
@@ -459,11 +547,14 @@ def run_verify(args):
 def main():
     p = argparse.ArgumentParser(description="Eye-in-hand calibration (camera on UR5)")
     p.add_argument("--auto", action="store_true", help="Teach marker + auto motion + solve")
-    p.add_argument("--poses", type=int, default=10)
-    p.add_argument("--step-m", type=float, default=0.06, help="Pose spacing meters (default 6 cm)")
+    p.add_argument("--poses", type=int, default=20, help="Number of views (default 20)")
+    p.add_argument("--step-m", type=float, default=0.04, help="Pose spacing meters (default 4 cm)")
     p.add_argument("--solve", action="store_true")
     p.add_argument("--verify", action="store_true")
     p.add_argument("--make-marker", action="store_true")
+    p.add_argument("--reuse-marker", action="store_true", help="Reuse marker_base from last calib (no TEACH)")
+    p.add_argument("--append", action="store_true", help="Keep prior samples when reusing marker")
+    p.add_argument("--yes", action="store_true", help="Skip YES confirmation")
     p.add_argument("--host", default=ROBOT_HOST)
     p.add_argument("--marker-id", type=int, default=0)
     p.add_argument("--out", default=DEFAULT_OUT)

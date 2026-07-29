@@ -164,6 +164,8 @@ class RobotSession:
         camera_tools = {
             "get_camera_frame",
             "detect_objects",
+            "detect_objects_nanoowl",
+            "go_to_object",
             "approach_object_once",
             "execute_rl_policy",
             "execute_vla_policy",

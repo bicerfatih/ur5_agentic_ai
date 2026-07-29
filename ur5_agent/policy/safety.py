@@ -20,6 +20,7 @@ MOTION_TOOLS = {
     "move_backward",
     "execute_rl_policy",
     "approach_object_once",
+    "go_to_object",
 }
 
 GRIPPER_TOOLS = frozenset({"open_gripper", "close_gripper", "toggle_gripper"})

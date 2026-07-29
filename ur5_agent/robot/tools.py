@@ -117,12 +117,34 @@ def get_robot_state(robot: RobotDriver, policy: PolicyEngine) -> dict:
 
 
 def move_home(robot: RobotDriver) -> dict:
-    print("  [TOOL] move_home")
+    from robot.home_pose import get_home_joints
+
+    target = get_home_joints()
+    print(f"  [TOOL] move_home → {[round(j, 4) for j in target]}")
     robot.move_home()
     return {
         "status": "done",
         "position": "home",
+        "target_joints_rad": [round(j, 4) for j in target],
         "joints": robot.get_joint_positions(),
+    }
+
+
+def set_home_here(robot: RobotDriver) -> dict:
+    """Save the robot's current joint pose as the taught Home position."""
+    from robot.home_pose import save_home_joints
+
+    joints = robot.get_joint_positions()
+    tcp = robot.get_tcp_pose() if hasattr(robot, "get_tcp_pose") else None
+    print(f"  [TOOL] set_home_here joints={[round(j, 4) for j in joints]}")
+    try:
+        saved = save_home_joints(joints, tcp_pose=tcp)
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
+    return {
+        "status": "done",
+        "message": "Current pose saved as Home. Click Home to return here.",
+        **saved,
     }
 
 
@@ -613,23 +635,28 @@ def go_to_object(
     robot: RobotDriver,
     target_label: str = "",
     approach_offset_m: list | None = None,
-    speed: float = 0.15,
-    accel: float = 0.15,
+    speed: float = 0.12,
+    accel: float = 0.12,
+    max_step_m: float = 0.18,
 ) -> dict:
-    """Detect object with depth camera and move TCP directly to it in ONE move.
+    """ONE-SHOT: center the object in the camera using the same L/R F/B mapping as manual.
 
-    Uses hand-eye calibration to compute the 3D position in robot base frame,
-    then commands a single moveL to the approach point (offset in front of object).
-    Much faster than repeated approach_object_once steps.
+    Does NOT use hand-eye XYZ (that was aiming wrong). Uses:
+      - NanoOWL/YOLO detection
+      - image offset (du, dv) → MOTION_*_VEC (proven correct)
+      - depth + intrinsics to scale how far to move in one shot
     """
+    del approach_offset_m, accel  # kept for API compat
+    from camera.geometry import sample_depth_m
+
+    print(f"  [TOOL] go_to_object (image one-shot) label={target_label!r}")
     cam, err = _ensure_camera()
     if err:
         return err
-    calib, calib_err = _ensure_hand_eye()
-    if calib_err:
-        return calib_err
 
-    print(f"  [TOOL] go_to_object label={target_label!r}")
+    st = robot.get_full_state()
+    tcp_pose = st.get("tcp_pose") or [0.3, 0.0, 0.3, 0.0, 0.0, 0.0]
+    tcp_before = [float(v) for v in tcp_pose[:3]]
 
     try:
         rgbd = cam.capture_rgbd()
@@ -637,11 +664,13 @@ def go_to_object(
         return {"status": "error", "reason": f"camera capture failed: {e}"}
 
     frame = rgbd["color"]
+    h, w = frame.shape[:2]
     depth = rgbd.get("depth")
-    if depth is None:
-        return {"status": "error", "reason": "Depth unavailable — set CAMERA_DEPTH_ENABLED=true."}
+    depth_scale = float(rgbd.get("depth_scale", 0.001))
+    intr = rgbd.get("intrinsics") or {}
+    fx = float(intr.get("fx") or 390.0)
+    fy = float(intr.get("fy") or 390.0)
 
-    # Detect with NanoOWL if available, else YOLO.
     if not hasattr(go_to_object, "_owl"):
         try:
             from camera.nanoowl_detector import NanoOwlDetector
@@ -653,6 +682,8 @@ def go_to_object(
         queries = [target_label] if target_label else None
         meta = owl.detect(frame, queries=queries)
     else:
+        if _detector is None:
+            return {"status": "error", "reason": "No detector available."}
         meta = _detector.detect(frame)
 
     tgt = _pick_detection_object(meta, target_label)
@@ -663,69 +694,90 @@ def go_to_object(
             "labels_seen": meta.get("labels", []),
         }
 
-    st = robot.get_full_state()
-    tcp_pose = st.get("tcp_pose") or [0.3, 0.0, 0.3, 0.0, 0.0, 0.0]
-    tcp_before = [float(v) for v in tcp_pose[:3]]
+    center = tgt.get("center") or {}
+    u = float(center.get("x", w / 2))
+    v = float(center.get("y", h / 2))
+    cx, cy = w / 2.0, h / 2.0
+    du = u - cx  # + = object right in image
+    dv = v - cy  # + = object lower in image
+    dead = 12.0
 
-    offset = _parse_xyz_triplet(
-        approach_offset_m,
-        _parse_xyz_triplet(REACH_APPROACH_OFFSET_M, [0.0, 0.0, 0.10]),
-    )
-
-    est = estimate_object_target_base(
-        obj=tgt,
-        depth_image=depth,
-        depth_scale=float(rgbd.get("depth_scale", 0.001)),
-        intrinsics=rgbd.get("intrinsics") or {},
-        calib=calib,
-        tcp_pose=tcp_pose if calib.mount == "eye_in_hand" else None,
-        approach_offset_m=offset,
-    )
-    if est is None or "target_base_m" not in est:
-        return {
-            "status": "error",
-            "reason": (est or {}).get("error", "Could not compute 3D target from depth."),
-            "label": tgt.get("label"),
-            "hint": "Check hand-eye calibration and ensure depth is valid at object center.",
-        }
-
-    target = [float(v) for v in est["target_base_m"][:3]]
-    dist = sum((target[i] - tcp_before[i]) ** 2 for i in range(3)) ** 0.5
-
-    if dist < 0.01:
+    if abs(du) < dead and abs(dv) < dead:
         return {
             "status": "done",
-            "note": "Already at target — no move needed.",
+            "mode": "image_oneshot",
+            "note": "Object already near image center — no move.",
             "label": tgt.get("label"),
-            "dist_m": round(dist, 4),
+            "pixel": {"u": round(u, 1), "v": round(v, 1)},
+            "du_px": round(du, 1),
+            "dv_px": round(dv, 1),
+            "tcp_before": [round(x, 4) for x in tcp_before],
         }
 
-    # Build full target pose: keep current orientation, move to target xyz.
-    target_pose = list(tcp_pose)
-    target_pose[0] = target[0]
-    target_pose[1] = target[1]
-    target_pose[2] = target[2]
+    depth_m = None
+    if depth is not None:
+        depth_m = sample_depth_m(depth, int(round(u)), int(round(v)), depth_scale=depth_scale)
+    if depth_m is None or depth_m <= 0.05:
+        depth_m = 0.25  # safe fallback
 
-    try:
-        robot.rtde_c.moveL(target_pose, speed, accel)
-    except Exception as e:
-        return {"status": "error", "reason": f"moveL failed: {e}"}
+    # Pixel → meters in the image plane at this depth (same axes the step approach uses).
+    mag_lr = abs(du) * depth_m / max(fx, 1.0)
+    mag_fb = abs(dv) * depth_m / max(fy, 1.0)
+    # Mild under-shoot so we don't overshoot past the object.
+    gain = 0.85
+    mag_lr *= gain
+    mag_fb *= gain
 
+    go_right = (du > 0) ^ APPROACH_IMAGE_INVERT_LR
+    go_back = (dv > 0) ^ APPROACH_IMAGE_INVERT_FB
+    axis_lr = MOTION_RIGHT_VEC if go_right else MOTION_LEFT_VEC
+    axis_fb = MOTION_BACKWARD_VEC if go_back else MOTION_FORWARD_VEC
+
+    dx = axis_lr[0] * mag_lr + axis_fb[0] * mag_fb
+    dy = axis_lr[1] * mag_lr + axis_fb[1] * mag_fb
+    dz = axis_lr[2] * mag_lr + axis_fb[2] * mag_fb
+
+    dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+    cap = max(0.02, min(float(max_step_m), 0.25))
+    if dist > cap and dist > 1e-6:
+        s = cap / dist
+        dx, dy, dz = dx * s, dy * s, dz * s
+        dist = cap
+
+    print(
+        f"  [TOOL] go_to_object one-shot Δ=[{dx:.3f},{dy:.3f},{dz:.3f}] "
+        f"du={du:.0f}px dv={dv:.0f}px depth={depth_m:.3f}m "
+        f"LR={'R' if go_right else 'L'} FB={'B' if go_back else 'F'}"
+    )
+    report = robot.move_tcp_relative(dx=dx, dy=dy, dz=dz, speed=speed)
     st2 = robot.get_full_state()
-    tcp_after = [float(v) for v in (st2.get("tcp_pose") or target_pose)[:3]]
-    dist_after = sum((target[i] - tcp_after[i]) ** 2 for i in range(3)) ** 0.5
+    tcp_after = [float(v) for v in (st2.get("tcp_pose") or tcp_pose)[:3]]
 
     return {
         "status": "done",
+        "mode": "image_oneshot",
         "label": tgt.get("label"),
         "confidence": tgt.get("confidence"),
-        "target_base_m": [round(v, 4) for v in target],
-        "tcp_before": [round(v, 4) for v in tcp_before],
-        "tcp_after": [round(v, 4) for v in tcp_after],
-        "dist_moved_m": round(dist, 4),
-        "dist_remaining_m": round(dist_after, 4),
-        "depth_m": round(float(est.get("depth_m", 0)), 4),
-        "note": f"Moved directly to '{tgt.get('label')}' in one moveL.",
+        "bbox": tgt.get("bbox"),
+        "pixel": {"u": round(u, 1), "v": round(v, 1)},
+        "du_px": round(du, 1),
+        "dv_px": round(dv, 1),
+        "depth_m": round(float(depth_m), 4),
+        "decision": {
+            "lr": "right" if go_right else "left",
+            "fb": "backward" if go_back else "forward",
+            "mag_lr_m": round(mag_lr, 4),
+            "mag_fb_m": round(mag_fb, 4),
+        },
+        "step_commanded_m": [round(dx, 4), round(dy, 4), round(dz, 4)],
+        "dist_m": round(dist, 4),
+        "tcp_before": [round(x, 4) for x in tcp_before],
+        "tcp_after": [round(x, 4) for x in tcp_after],
+        "motion_report": report,
+        "note": (
+            f"ONE image-based move to center '{tgt.get('label')}' "
+            f"(same L/R F/B mapping as manual — not hand-eye XYZ)."
+        ),
     }
 
 
@@ -1129,6 +1181,7 @@ def execute_tool(
     dispatch = {
         "get_robot_state": lambda: get_robot_state(robot, policy),
         "move_home": lambda: move_home(robot),
+        "set_home_here": lambda: set_home_here(robot),
         "move_joint": lambda: move_joint(robot, **inputs),
         "jog_joint": lambda: jog_joint(robot, **inputs),
         "move_linear": lambda: move_linear(robot, **inputs),
@@ -1181,6 +1234,14 @@ TOOL_SCHEMAS = [
         "description": (
             "Move to taught home joint pose. ONLY when the operator explicitly asks "
             "to go home — never for error recovery or unclear commands."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "set_home_here",
+        "description": (
+            "Save the robot's CURRENT joint pose as the new Home position. "
+            "After this, move_home / the Home button returns to that pose."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
@@ -1427,26 +1488,25 @@ TOOL_SCHEMAS = [
     {
         "name": "go_to_object",
         "description": (
-            "Detects the object using depth camera + hand-eye calibration and moves the TCP "
-            "directly to it in ONE single moveL command. "
-            "NOTE: requires accurate hand-eye calibration. If the robot moves the wrong way, "
-            "use approach_object_once instead (image-based, more reliable)."
+            "PREFERRED for 'go to X', 'move to the bottle/cup'. "
+            "ONE image-based move that centers the object in the camera "
+            "(same Left/Right/Forward/Back mapping as manual control). "
+            "Uses depth only to scale distance — not hand-eye XYZ."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "target_label": {
                     "type": "string",
-                    "description": "Object name to move to, e.g. 'bottle', 'cup', 'red screwdriver'",
+                    "description": "Object name to move to, e.g. 'bottle', 'cup'",
                 },
-                "approach_offset_m": {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "description": "[x, y, z] offset in meters from object center (default [0, 0, 0.10] = 10cm above)",
+                "max_step_m": {
+                    "type": "number",
+                    "description": "Max travel in meters for the one shot (default 0.18)",
                 },
                 "speed": {
                     "type": "number",
-                    "description": "Linear speed m/s (default 0.15)",
+                    "description": "Linear speed m/s (default 0.12)",
                 },
             },
             "required": ["target_label"],
@@ -1455,11 +1515,8 @@ TOOL_SCHEMAS = [
     {
         "name": "approach_object_once",
         "description": (
-            "PREFERRED for 'go to bottle/cup/object', 'move toward X'. "
-            "Detects the object and takes ONE step toward it using image-based direction — "
-            "reliable regardless of hand-eye calibration quality. "
-            "Call repeatedly (5-10 times) to walk the robot to the object. "
-            "Use step_m=0.05 for faster approach. Default mode=image."
+            "Small ONE short image-based step (default 3–5 cm). "
+            "Use only when the user asks for another small nudge after go_to_object."
         ),
         "input_schema": {
             "type": "object",

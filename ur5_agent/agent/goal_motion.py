@@ -95,7 +95,7 @@ def _tool_for_direction(direction: str) -> str | None:
 
 
 def parse_approach_object_goal(goal: str) -> list[dict] | None:
-    """Map 'move toward the bottle' → one approach_object_once (image mode)."""
+    """Map 'go to / move toward the bottle' → one go_to_object (image one-shot)."""
     text = _normalize_goal(goal)
     if not text:
         return None
@@ -112,8 +112,8 @@ def parse_approach_object_goal(goal: str) -> list[dict] | None:
     label = " ".join(parts)
     return [
         {
-            "name": "approach_object_once",
-            "arguments": {"target_label": label, "step_m": 0.03, "mode": "image"},
+            "name": "go_to_object",
+            "arguments": {"target_label": label},
         }
     ]
 
@@ -148,5 +148,5 @@ def parse_cartesian_motion_goal(goal: str) -> list[dict] | None:
 
 
 def parse_direct_motion_goal(goal: str) -> list[dict] | None:
-    """Cartesian distance move, or single image-based approach — no LLM."""
+    """Cartesian distance move, or image one-shot go-to-object — no LLM."""
     return parse_cartesian_motion_goal(goal) or parse_approach_object_goal(goal)

@@ -32,10 +32,9 @@ def _motion_vec(env_key: str, default: str) -> tuple[float, float, float]:
 MOTION_UP_VEC = _motion_vec("MOTION_UP_VEC", "0,0,1")
 MOTION_DOWN_VEC = _motion_vec("MOTION_DOWN_VEC", "0,0,-1")
 # Operator frame (standing behind robot) vs UR base X/Y is ~45° rotated.
-# Measured from: Forward→back-right45, Back→forward-left45, Right→forward-right45.
-# That implies: OpForward=(+X-Y)/√2, OpRight=(-X-Y)/√2 in base frame.
-MOTION_FORWARD_VEC = _motion_vec("MOTION_FORWARD_VEC", "0.7071,-0.7071,0")
-MOTION_BACKWARD_VEC = _motion_vec("MOTION_BACKWARD_VEC", "-0.7071,0.7071,0")
+# Left/Right confirmed OK; Forward/Back were inverted → swapped.
+MOTION_FORWARD_VEC = _motion_vec("MOTION_FORWARD_VEC", "-0.7071,0.7071,0")
+MOTION_BACKWARD_VEC = _motion_vec("MOTION_BACKWARD_VEC", "0.7071,-0.7071,0")
 MOTION_LEFT_VEC = _motion_vec("MOTION_LEFT_VEC", "0.7071,0.7071,0")
 MOTION_RIGHT_VEC = _motion_vec("MOTION_RIGHT_VEC", "-0.7071,-0.7071,0")
 
@@ -55,7 +54,12 @@ APPROACH_IMAGE_INVERT_LR = _env_bool("APPROACH_IMAGE_INVERT_LR", False)
 APPROACH_IMAGE_INVERT_FB = _env_bool("APPROACH_IMAGE_INVERT_FB", True)
 
 # ── Safe home position (joint angles in radians) ───────
+# Default factory pose; overridden by taught pose at HOME_POSE_PATH when present.
 HOME_JOINTS = [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0]
+HOME_POSE_PATH = os.environ.get(
+    "HOME_POSE_PATH",
+    os.path.join(os.path.dirname(__file__), "../../data/home_pose.json"),
+).strip()
 
 # ── LLM backend: ollama (default) | claude ─────────────
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")

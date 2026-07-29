@@ -53,7 +53,14 @@ class BaseRobotAgent:
         direct_calls = parse_direct_motion_goal(goal)
         if direct_calls:
             call = direct_calls[0]
-            if call["name"] == "approach_object_once":
+            if call["name"] == "go_to_object":
+                print(
+                    f"\n🎯  Go-to-object → ONE image-centered move toward "
+                    f"{call['arguments'].get('target_label')!r}\n",
+                    flush=True,
+                )
+                self._log(f"DIRECT GO_TO_OBJECT: {call}")
+            elif call["name"] == "approach_object_once":
                 print(
                     f"\n📷  Approach goal → one image step toward "
                     f"{call['arguments'].get('target_label')!r} (no gripper, no multi-move)\n",

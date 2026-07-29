@@ -518,7 +518,9 @@ class UR5Driver(RobotDriver):
             return self._move_linear_from_locked(start, tcp_pose, speed, accel)
 
     def move_home(self):
-        self.move_joint(HOME_JOINTS, speed=0.3, accel=0.3)
+        from robot.home_pose import get_home_joints
+
+        self.move_joint(get_home_joints(), speed=0.3, accel=0.3)
 
     def stop(self):
         if self.rtde_c and self.rtde_c.isConnected():

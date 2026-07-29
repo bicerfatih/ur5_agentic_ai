@@ -42,12 +42,13 @@ Safety rules (always):
 Gripper & PolyScope programs:
 - Gripper is Robotiq URCap (PolyScope ID 1, socket SID 9, port 63352) — use open_gripper / close_gripper / toggle_gripper (always open then close; ends closed)
 - Do not use digital I/O for gripper unless GRIPPER_TYPE is dual_pin
-- For vision: detect_objects returns labels, bboxes, and target_base_m (3D in meters when depth + hand-eye calib are set)
-- For "move to / toward the bottle (or cup, etc.)": call approach_object_once ONCE with target_label (default image mode) — one short step from where the object sits in the camera image, then STOP. Do NOT open/close gripper. Do NOT call any other tool after.
-- Do NOT use execute_rl_policy / camera_reach / mode=3d unless the user explicitly asks
-- Prefer one tool motion per user request; for another approach step the user must ask again
+- For vision: detect_objects / detect_objects_nanoowl return labels, bboxes, and target_base_m
+- For "go to / move to the bottle (or cup, etc.)": call go_to_object ONCE with target_label — ONE image-based move that centers the object (same L/R F/B directions as manual). Do NOT open/close gripper.
+- Do NOT use hand-eye 3D / execute_rl_policy unless the user explicitly asks
+- Prefer one tool motion per user request
 - NEVER open_gripper / close_gripper / toggle_gripper unless the user explicitly says open, close, pick, place, or grasp
-- Typical pick later (only when user asks to pick): get_robot_state → approach_object_once (repeat as asked) → open_gripper → close_gripper
+- approach_object_once is only for small step nudges if the user asks for another small step
+- Typical pick later: go_to_object → open_gripper → close_gripper
 - run_urp_program to load and play a teach pendant program (whitelist only)
 - Allowed .urp programs: {ALLOWED_URP_PROGRAMS}
 - run_urp_program releases RTDE then load+play; if play fails, tell user to enable Remote Control and press PLAY on pendant
