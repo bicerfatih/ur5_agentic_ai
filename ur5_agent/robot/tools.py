@@ -501,6 +501,234 @@ def detect_objects(
         return {"status": "error", "reason": str(e)}
 
 
+def detect_objects_nanoowl(
+    robot: RobotDriver,
+    queries: list | None = None,
+    query: str = "",
+    threshold: float | None = None,
+    save_image: bool = False,
+    session_id: str = "lab",
+    prefix: str = "nanoowl",
+    include_3d: bool = True,
+    approach_offset_m: list | None = None,
+) -> dict:
+    """Open-vocabulary detection via NanoOWL on Thor GPU.
+
+    queries: list of text strings, e.g. ["cup", "screwdriver"]
+    query:   single text string (shorthand for queries=["..."])
+    """
+    cam, err = _ensure_camera()
+    if err:
+        return err
+
+    # Build query list.
+    q_list: list[str] = []
+    if query:
+        q_list = [q.strip() for q in query.split(",") if q.strip()]
+    if queries:
+        q_list = list(queries)
+    if not q_list:
+        from config.settings import NANOOWL_DEFAULT_QUERIES
+        q_list = NANOOWL_DEFAULT_QUERIES
+
+    print(f"  [TOOL] detect_objects_nanoowl queries={q_list}")
+
+    try:
+        from camera.nanoowl_detector import NanoOwlDetector
+    except ImportError as e:
+        return {"status": "error", "reason": f"NanoOWL not installed: {e}"}
+
+    # Singleton per process.
+    if not hasattr(detect_objects_nanoowl, "_owl"):
+        detect_objects_nanoowl._owl = NanoOwlDetector()
+    owl: NanoOwlDetector = detect_objects_nanoowl._owl
+
+    try:
+        rgbd = cam.capture_rgbd()
+        frame = rgbd["color"]
+        meta = owl.detect(frame, queries=q_list, threshold=threshold)
+
+        objects = meta.get("objects", [])
+
+        pose3d = None
+        if include_3d and rgbd.get("depth") is not None and estimate_object_target_base is not None:
+            calib, calib_err = _ensure_hand_eye()
+            if calib_err:
+                pose3d = {"status": "error", "reason": calib_err["reason"]}
+            else:
+                offset = _parse_xyz_triplet(
+                    approach_offset_m,
+                    _parse_xyz_triplet(REACH_APPROACH_OFFSET_M, [0.0, 0.0, 0.05]),
+                )
+                st = robot.get_full_state()
+                tcp_pose = st.get("tcp_pose") if calib.mount == "eye_in_hand" else None
+                enriched = []
+                for obj in objects:
+                    est = estimate_object_target_base(
+                        obj=obj,
+                        depth_image=rgbd["depth"],
+                        depth_scale=float(rgbd.get("depth_scale", 0.001)),
+                        intrinsics=rgbd.get("intrinsics") or {},
+                        calib=calib,
+                        tcp_pose=tcp_pose,
+                        approach_offset_m=offset,
+                    )
+                    if est and "target_base_m" in est:
+                        obj = {**obj, "target_base_m": est["target_base_m"], "pose3d": est}
+                    enriched.append(obj)
+                objects = enriched
+                if objects:
+                    pose3d = objects[0].get("pose3d")
+
+        result = {
+            "status": "done",
+            "queries": q_list,
+            "count": len(objects),
+            "labels": [o["label"] for o in objects],
+            "unique_labels": list(dict.fromkeys(o["label"] for o in objects)),
+            "detector": "nanoowl",
+            "model": meta.get("model"),
+            "objects": objects,
+            "image_shape": list(frame.shape),
+            "pose3d": pose3d,
+        }
+        if save_image:
+            import cv2, datetime as dt, os
+            from camera.nanoowl_detector import _draw_boxes
+            from config.settings import CAMERA_OUTPUT_DIR
+
+            drawn = _draw_boxes(frame, meta)
+            out_dir = os.path.abspath(CAMERA_OUTPUT_DIR)
+            os.makedirs(out_dir, exist_ok=True)
+            stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            path = os.path.join(out_dir, f"{prefix}_{session_id}_{stamp}.jpg")
+            if cv2.imwrite(path, drawn):
+                result["annotated_path"] = path
+        return result
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
+
+
+def go_to_object(
+    robot: RobotDriver,
+    target_label: str = "",
+    approach_offset_m: list | None = None,
+    speed: float = 0.15,
+    accel: float = 0.15,
+) -> dict:
+    """Detect object with depth camera and move TCP directly to it in ONE move.
+
+    Uses hand-eye calibration to compute the 3D position in robot base frame,
+    then commands a single moveL to the approach point (offset in front of object).
+    Much faster than repeated approach_object_once steps.
+    """
+    cam, err = _ensure_camera()
+    if err:
+        return err
+    calib, calib_err = _ensure_hand_eye()
+    if calib_err:
+        return calib_err
+
+    print(f"  [TOOL] go_to_object label={target_label!r}")
+
+    try:
+        rgbd = cam.capture_rgbd()
+    except Exception as e:
+        return {"status": "error", "reason": f"camera capture failed: {e}"}
+
+    frame = rgbd["color"]
+    depth = rgbd.get("depth")
+    if depth is None:
+        return {"status": "error", "reason": "Depth unavailable — set CAMERA_DEPTH_ENABLED=true."}
+
+    # Detect with NanoOWL if available, else YOLO.
+    if not hasattr(go_to_object, "_owl"):
+        try:
+            from camera.nanoowl_detector import NanoOwlDetector
+            go_to_object._owl = NanoOwlDetector()
+        except Exception:
+            go_to_object._owl = None
+    owl = getattr(go_to_object, "_owl", None)
+    if owl is not None and owl._ensure():
+        queries = [target_label] if target_label else None
+        meta = owl.detect(frame, queries=queries)
+    else:
+        meta = _detector.detect(frame)
+
+    tgt = _pick_detection_object(meta, target_label)
+    if tgt is None:
+        return {
+            "status": "error",
+            "reason": f"Object '{target_label}' not found in frame.",
+            "labels_seen": meta.get("labels", []),
+        }
+
+    st = robot.get_full_state()
+    tcp_pose = st.get("tcp_pose") or [0.3, 0.0, 0.3, 0.0, 0.0, 0.0]
+    tcp_before = [float(v) for v in tcp_pose[:3]]
+
+    offset = _parse_xyz_triplet(
+        approach_offset_m,
+        _parse_xyz_triplet(REACH_APPROACH_OFFSET_M, [0.0, 0.0, 0.10]),
+    )
+
+    est = estimate_object_target_base(
+        obj=tgt,
+        depth_image=depth,
+        depth_scale=float(rgbd.get("depth_scale", 0.001)),
+        intrinsics=rgbd.get("intrinsics") or {},
+        calib=calib,
+        tcp_pose=tcp_pose if calib.mount == "eye_in_hand" else None,
+        approach_offset_m=offset,
+    )
+    if est is None or "target_base_m" not in est:
+        return {
+            "status": "error",
+            "reason": (est or {}).get("error", "Could not compute 3D target from depth."),
+            "label": tgt.get("label"),
+            "hint": "Check hand-eye calibration and ensure depth is valid at object center.",
+        }
+
+    target = [float(v) for v in est["target_base_m"][:3]]
+    dist = sum((target[i] - tcp_before[i]) ** 2 for i in range(3)) ** 0.5
+
+    if dist < 0.01:
+        return {
+            "status": "done",
+            "note": "Already at target — no move needed.",
+            "label": tgt.get("label"),
+            "dist_m": round(dist, 4),
+        }
+
+    # Build full target pose: keep current orientation, move to target xyz.
+    target_pose = list(tcp_pose)
+    target_pose[0] = target[0]
+    target_pose[1] = target[1]
+    target_pose[2] = target[2]
+
+    try:
+        robot.rtde_c.moveL(target_pose, speed, accel)
+    except Exception as e:
+        return {"status": "error", "reason": f"moveL failed: {e}"}
+
+    st2 = robot.get_full_state()
+    tcp_after = [float(v) for v in (st2.get("tcp_pose") or target_pose)[:3]]
+    dist_after = sum((target[i] - tcp_after[i]) ** 2 for i in range(3)) ** 0.5
+
+    return {
+        "status": "done",
+        "label": tgt.get("label"),
+        "confidence": tgt.get("confidence"),
+        "target_base_m": [round(v, 4) for v in target],
+        "tcp_before": [round(v, 4) for v in tcp_before],
+        "tcp_after": [round(v, 4) for v in tcp_after],
+        "dist_moved_m": round(dist, 4),
+        "dist_remaining_m": round(dist_after, 4),
+        "depth_m": round(float(est.get("depth_m", 0)), 4),
+        "note": f"Moved directly to '{tgt.get('label')}' in one moveL.",
+    }
+
+
 def execute_rl_policy(
     robot: RobotDriver,
     task_id: str = "reach_free_space",
@@ -705,7 +933,19 @@ def approach_object_once(
 
     frame = rgbd["color"]
     h, w = frame.shape[:2]
-    meta = _detector.detect(frame)
+    # Use NanoOWL if available, fall back to YOLO.
+    if not hasattr(approach_object_once, "_owl"):
+        try:
+            from camera.nanoowl_detector import NanoOwlDetector
+            approach_object_once._owl = NanoOwlDetector()
+        except Exception:
+            approach_object_once._owl = None
+    owl = getattr(approach_object_once, "_owl", None)
+    if owl is not None and owl._ensure():
+        queries = [target_label] if target_label else None
+        meta = owl.detect(frame, queries=queries)
+    else:
+        meta = _detector.detect(frame)
     tgt = _pick_detection_object(meta, target_label)
     if tgt is None:
         return {
@@ -909,6 +1149,8 @@ def execute_tool(
         "reconnect_rtde_control": lambda: reconnect_rtde_control(robot),
         "get_camera_frame": lambda: get_camera_frame(robot, **inputs),
         "detect_objects": lambda: detect_objects(robot, **inputs),
+        "detect_objects_nanoowl": lambda: detect_objects_nanoowl(robot, **inputs),
+        "go_to_object": lambda: go_to_object(robot, **inputs),
         "approach_object_once": lambda: approach_object_once(robot, **inputs),
         "execute_rl_policy": lambda: execute_rl_policy(robot, **inputs),
     }
@@ -1123,6 +1365,43 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "detect_objects_nanoowl",
+        "description": (
+            "Open-vocabulary object detection using NVIDIA NanoOWL on Thor GPU. "
+            "Unlike detect_objects (fixed YOLO classes), this accepts ANY text query — "
+            "'cup', 'red screwdriver', 'robot gripper'. Use when the object is not a standard COCO class "
+            "or when the user names an object that YOLO might miss. "
+            "Returns labels, bounding boxes, confidence scores, and (with depth + hand-eye) target_base_m."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Single text query, e.g. 'cup' or 'red bottle, screwdriver' (comma-separated)",
+                },
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of text queries, e.g. ['cup', 'wrench']",
+                },
+                "threshold": {
+                    "type": "number",
+                    "description": "Confidence threshold 0–1 (default 0.15). Lower = more detections.",
+                },
+                "save_image": {
+                    "type": "boolean",
+                    "description": "Save annotated JPEG with detection boxes",
+                },
+                "label_filter": {
+                    "type": "string",
+                    "description": "Optional substring filter on returned objects",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "detect_objects",
         "description": (
             "Capture a live camera frame and run object detection (YOLO or contour fallback). "
@@ -1146,13 +1425,41 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "go_to_object",
+        "description": (
+            "Detects the object using depth camera + hand-eye calibration and moves the TCP "
+            "directly to it in ONE single moveL command. "
+            "NOTE: requires accurate hand-eye calibration. If the robot moves the wrong way, "
+            "use approach_object_once instead (image-based, more reliable)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_label": {
+                    "type": "string",
+                    "description": "Object name to move to, e.g. 'bottle', 'cup', 'red screwdriver'",
+                },
+                "approach_offset_m": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "description": "[x, y, z] offset in meters from object center (default [0, 0, 0.10] = 10cm above)",
+                },
+                "speed": {
+                    "type": "number",
+                    "description": "Linear speed m/s (default 0.15)",
+                },
+            },
+            "required": ["target_label"],
+        },
+    },
+    {
         "name": "approach_object_once",
         "description": (
-            "PREFERRED for 'move toward bottle/cup/object'. Detects the object and takes "
-            "EXACTLY ONE short step (default 3 cm) then stops. Default mode=image uses "
-            "where the object is in the camera picture (left/right on screen) — ignores "
-            "hand-eye. Use mode=3d only after hand-eye is verified. "
-            "Do NOT call execute_rl_policy for simple approach tests."
+            "PREFERRED for 'go to bottle/cup/object', 'move toward X'. "
+            "Detects the object and takes ONE step toward it using image-based direction — "
+            "reliable regardless of hand-eye calibration quality. "
+            "Call repeatedly (5-10 times) to walk the robot to the object. "
+            "Use step_m=0.05 for faster approach. Default mode=image."
         ),
         "input_schema": {
             "type": "object",

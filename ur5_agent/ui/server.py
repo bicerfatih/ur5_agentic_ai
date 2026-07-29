@@ -86,6 +86,7 @@ class RobotSession:
         self.live_camera = None
         self.camera_lock = threading.Lock()
         self.detector = ObjectDetector()
+        self.owl_detector = None  # lazy-loaded on first NanoOWL request
         self.last_detection: dict[str, Any] = {"count": 0, "labels": []}
         self.last_good_state: dict[str, Any] | None = None
         self.last_state_error: str | None = None
@@ -249,16 +250,29 @@ class RobotSession:
             raise RuntimeError("Failed to encode camera frame.")
         return encoded.tobytes()
 
-    def live_jpeg_with_detection(self) -> bytes:
+    def live_jpeg_with_detection(self, queries: list[str] | None = None) -> bytes:
         if CAMERA_TYPE == "none":
             raise RuntimeError("Camera disabled (CAMERA_TYPE=none)")
         with self.camera_lock:
             if self.live_camera is None:
                 self.live_camera = RealSenseCamera()
             frame = self.live_camera.capture_color_frame()
-        frame, meta = self.detector.detect_and_draw(frame)
-        self.last_detection = ObjectDetector.to_summary(meta)
-        ok, encoded = cv2.imencode(".jpg", frame)
+
+        if self.owl_detector is None:
+            from camera.nanoowl_detector import NanoOwlDetector
+            self.owl_detector = NanoOwlDetector()
+
+        drawn, meta = self.owl_detector.detect_and_draw(frame, queries=queries)
+        self.last_detection = {
+            "count": meta.get("count", 0),
+            "labels": meta.get("labels", []),
+            "unique_labels": meta.get("unique_labels", []),
+            "detector": "nanoowl",
+            "queries": queries or [],
+            "objects": meta.get("objects", []),
+        }
+
+        ok, encoded = cv2.imencode(".jpg", drawn)
         if not ok:
             raise RuntimeError("Failed to encode detection frame.")
         return encoded.tobytes()
@@ -497,9 +511,13 @@ def api_detection():
 
 
 @app.get("/api/camera/live.jpg")
-def api_camera_live_jpg(detect: int = 0):
+def api_camera_live_jpg(detect: int = 0, query: str = ""):
     try:
-        jpeg = session.live_jpeg_with_detection() if int(detect) == 1 else session.live_jpeg()
+        if int(detect) == 1:
+            queries = [q.strip() for q in query.split(",") if q.strip()] if query.strip() else None
+            jpeg = session.live_jpeg_with_detection(queries=queries)
+        else:
+            jpeg = session.live_jpeg()
         return Response(content=jpeg, media_type="image/jpeg")
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e)) from e

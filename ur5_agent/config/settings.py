@@ -31,13 +31,15 @@ def _motion_vec(env_key: str, default: str) -> tuple[float, float, float]:
 
 MOTION_UP_VEC = _motion_vec("MOTION_UP_VEC", "0,0,1")
 MOTION_DOWN_VEC = _motion_vec("MOTION_DOWN_VEC", "0,0,-1")
-MOTION_FORWARD_VEC = _motion_vec("MOTION_FORWARD_VEC", "0,-1,0")
-MOTION_BACKWARD_VEC = _motion_vec("MOTION_BACKWARD_VEC", "0,1,0")
-MOTION_LEFT_VEC = _motion_vec("MOTION_LEFT_VEC", "1,0,0")
-MOTION_RIGHT_VEC = _motion_vec("MOTION_RIGHT_VEC", "-1,0,0")
+# Operator frame (standing behind robot) vs UR base X/Y is ~45° rotated.
+# Measured from: Forward→back-right45, Back→forward-left45, Right→forward-right45.
+# That implies: OpForward=(+X-Y)/√2, OpRight=(-X-Y)/√2 in base frame.
+MOTION_FORWARD_VEC = _motion_vec("MOTION_FORWARD_VEC", "0.7071,-0.7071,0")
+MOTION_BACKWARD_VEC = _motion_vec("MOTION_BACKWARD_VEC", "-0.7071,0.7071,0")
+MOTION_LEFT_VEC = _motion_vec("MOTION_LEFT_VEC", "0.7071,0.7071,0")
+MOTION_RIGHT_VEC = _motion_vec("MOTION_RIGHT_VEC", "-0.7071,-0.7071,0")
 
-# Horizontal moves: "base" = robot base X/Y (clearest for most cells).
-# "tool_horizontal" = left/right along gripper axes (often feels reversed).
+# Horizontal moves: "base" = robot base X/Y, "tool" = move along tool frame axes.
 MOTION_HORIZONTAL_MODE = os.environ.get("MOTION_HORIZONTAL_MODE", "base").strip().lower()
 
 # Image-based approach (eye-in-hand): map pixel offset → move_left/right/forward/back.
@@ -50,7 +52,7 @@ def _env_bool(key: str, default: bool) -> bool:
 
 
 APPROACH_IMAGE_INVERT_LR = _env_bool("APPROACH_IMAGE_INVERT_LR", False)
-APPROACH_IMAGE_INVERT_FB = _env_bool("APPROACH_IMAGE_INVERT_FB", False)
+APPROACH_IMAGE_INVERT_FB = _env_bool("APPROACH_IMAGE_INVERT_FB", True)
 
 # ── Safe home position (joint angles in radians) ───────
 HOME_JOINTS = [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0]
@@ -169,6 +171,24 @@ YOLO_MAX_DET = int(os.environ.get("YOLO_MAX_DET", "50"))
 # Device for YOLO: "cuda" uses Thor GPU (fastest), "cpu" fallback.
 # Set CUDA_VISIBLE_DEVICES=0 in env before launching for Thor.
 YOLO_DEVICE = os.environ.get("YOLO_DEVICE", "cuda").strip()
+
+# ── NanoOWL (open-vocabulary detection on Thor GPU) ─────
+# Enable after running: python3 scripts/build_nanoowl_engine.py
+NANOOWL_ENABLED = os.environ.get("NANOOWL_ENABLED", "true").lower() in ("1", "true", "yes")
+NANOOWL_ENGINE_PATH = os.environ.get(
+    "NANOOWL_ENGINE_PATH",
+    os.path.join(os.path.dirname(__file__), "../../data/models/owlvit_base_patch32.engine"),
+).strip()
+# Comma-separated default object queries when none are specified at call time.
+NANOOWL_DEFAULT_QUERIES = [
+    q.strip()
+    for q in os.environ.get(
+        "NANOOWL_DEFAULT_QUERIES",
+        "object,person,cup,bottle,box,tool,bag,phone,keyboard,chair,table"
+    ).split(",")
+    if q.strip()
+]
+NANOOWL_THRESHOLD = float(os.environ.get("NANOOWL_THRESHOLD", "0.12"))
 
 # ── RL (camera-first policy execution) ──────────────────
 RL_POLICY_PATH = os.environ.get("RL_POLICY_PATH", "").strip()

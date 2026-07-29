@@ -57,21 +57,33 @@ function renderEvents(events = []) {
 
 function renderDetectionLabels(det = {}) {
   const count = Number(det.count) || 0;
-  const labels = Array.isArray(det.unique_labels) && det.unique_labels.length
-    ? det.unique_labels
-    : Array.isArray(det.labels)
-      ? [...new Set(det.labels)]
-      : [];
-  if (!count && !labels.length) {
-    detectedLabelsEl.textContent = detectEnabled
-      ? "Detected: (none)"
-      : "Detected: —";
+  const objects = Array.isArray(det.objects) ? det.objects : [];
+
+  if (!count && !objects.length) {
+    detectedLabelsEl.innerHTML = detectEnabled ? "Detected: (none)" : "Detected: —";
     detectedLabelsEl.classList.add("empty");
     return;
   }
+
   detectedLabelsEl.classList.remove("empty");
-  const names = labels.length ? labels.join(", ") : "—";
-  detectedLabelsEl.textContent = `Detected (${count}): ${names}`;
+
+  if (objects.length) {
+    const rows = objects.map((o) => {
+      const bb = o.bbox || {};
+      const cx = o.center ? o.center.x : Math.round((bb.x1 + bb.x2) / 2);
+      const cy = o.center ? o.center.y : Math.round((bb.y1 + bb.y2) / 2);
+      const conf = o.confidence != null ? ` ${(o.confidence * 100).toFixed(0)}%` : "";
+      const coords = `[${bb.x1},${bb.y1} → ${bb.x2},${bb.y2}] center(${cx},${cy})`;
+      return `<span style="display:block;font-size:0.82em;margin:1px 0;">
+        <b>${o.label}</b>${conf} &nbsp; <span style="color:#888;">${coords}</span>
+      </span>`;
+    }).join("");
+    detectedLabelsEl.innerHTML = `<b>Detected (${count}):</b>${rows}`;
+  } else {
+    const labels = Array.isArray(det.unique_labels) && det.unique_labels.length
+      ? det.unique_labels : [...new Set(det.labels || [])];
+    detectedLabelsEl.textContent = `Detected (${count}): ${labels.join(", ")}`;
+  }
 }
 
 function normalizeRobotState(st) {
@@ -175,21 +187,15 @@ async function refreshLiveFrame() {
   const cacheBust = `t=${Date.now()}`;
   try {
     const res = await fetch(`/api/camera/live.jpg?detect=${detect}&${cacheBust}`);
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
-    if (livePreviewObjectUrl) {
-      URL.revokeObjectURL(livePreviewObjectUrl);
-    }
+    if (livePreviewObjectUrl) URL.revokeObjectURL(livePreviewObjectUrl);
     livePreviewObjectUrl = URL.createObjectURL(blob);
     cameraPreview.src = livePreviewObjectUrl;
     if (detectEnabled) {
       const detRes = await fetch("/api/detection");
-      if (detRes.ok) {
-        renderDetectionLabels(await detRes.json());
-      }
-      cameraHint.textContent = "Live feed + detection running.";
+      if (detRes.ok) renderDetectionLabels(await detRes.json());
+      cameraHint.textContent = "NanoOWL detection running.";
     } else {
       renderDetectionLabels({ count: 0, labels: [] });
       cameraHint.textContent = "Live feed running.";
