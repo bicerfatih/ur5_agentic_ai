@@ -4,6 +4,9 @@
 import os
 import sys
 
+# Set CUDA_VISIBLE_DEVICES before any torch/ultralytics import so Thor GPU is visible.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import uvicorn

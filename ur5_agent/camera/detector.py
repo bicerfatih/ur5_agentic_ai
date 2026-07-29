@@ -1,19 +1,43 @@
-"""Object detection for agent tools and ops console (YOLO + contour fallback)."""
+"""Object detection for agent tools and ops console (YOLO on NVIDIA Thor GPU + contour fallback)."""
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import cv2
 import numpy as np
 
-from config.settings import YOLO_CONF, YOLO_ENABLED, YOLO_IMGSZ, YOLO_MAX_DET, YOLO_MODEL_PATH
+from config.settings import YOLO_CONF, YOLO_DEVICE, YOLO_ENABLED, YOLO_IMGSZ, YOLO_MAX_DET, YOLO_MODEL_PATH
+
+
+def _resolve_yolo_device() -> str:
+    """Return a device string that Ultralytics accepts.
+
+    On Jetson Thor, CUDA_VISIBLE_DEVICES may not be set when the process
+    starts. We set it here (before torch is imported by Ultralytics) and
+    return '0' for CUDA, or 'cpu' as fallback.
+    """
+    want = YOLO_DEVICE.lower()
+    if want in ("cpu", ""):
+        return "cpu"
+    # Ensure the env var is set before Ultralytics/torch initialises.
+    if not os.environ.get("CUDA_VISIBLE_DEVICES"):
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    try:
+        import torch
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            return "0"
+    except Exception:
+        pass
+    return "cpu"
 
 
 class ObjectDetector:
     def __init__(self):
         self._yolo = None
         self._model_name: str | None = None
+        self._device: str = _resolve_yolo_device()
 
     def _ensure_yolo(self):
         if not YOLO_ENABLED:
@@ -29,8 +53,13 @@ class ObjectDetector:
         try:
             self._yolo = YOLO(model_path)
             self._model_name = model_path
+            # Warm up on the target device so first real inference is fast.
+            dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+            self._yolo.predict(source=dummy, device=self._device, verbose=False, imgsz=64)
+            print(f"[detector] YOLO {model_path} loaded on device={self._device}")
             return self._yolo
-        except Exception:
+        except Exception as e:
+            print(f"[detector] YOLO load failed ({e}), using contour fallback")
             self._yolo = None
             self._model_name = None
             return None
@@ -81,6 +110,7 @@ class ObjectDetector:
         try:
             results = model.predict(
                 source=frame,
+                device=self._device,
                 conf=YOLO_CONF,
                 imgsz=YOLO_IMGSZ,
                 max_det=YOLO_MAX_DET,

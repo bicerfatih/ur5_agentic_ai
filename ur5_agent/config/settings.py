@@ -163,9 +163,12 @@ YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "").strip()
 # Lower conf helps small / distant objects (was 0.35 — often missed ~40 cm targets).
 YOLO_CONF = float(os.environ.get("YOLO_CONF", "0.20"))
 # Inference size; larger = better for far/small objects (slower). 640 | 960 | 1280
-YOLO_IMGSZ = int(os.environ.get("YOLO_IMGSZ", "960"))
+YOLO_IMGSZ = int(os.environ.get("YOLO_IMGSZ", "640"))
 # Max detections per frame
 YOLO_MAX_DET = int(os.environ.get("YOLO_MAX_DET", "50"))
+# Device for YOLO: "cuda" uses Thor GPU (fastest), "cpu" fallback.
+# Set CUDA_VISIBLE_DEVICES=0 in env before launching for Thor.
+YOLO_DEVICE = os.environ.get("YOLO_DEVICE", "cuda").strip()
 
 # ── RL (camera-first policy execution) ──────────────────
 RL_POLICY_PATH = os.environ.get("RL_POLICY_PATH", "").strip()
