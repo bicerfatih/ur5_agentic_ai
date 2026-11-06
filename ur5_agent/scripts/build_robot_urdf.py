@@ -53,6 +53,39 @@ def _mirror_vendor_tree() -> tuple[Path, Path]:
     return ur_mirror, rq_mirror
 
 
+_AMENT_SHIM = '''\
+import os
+
+
+def get_package_share_directory(package_name):
+    for entry in os.environ.get("UR5_XACRO_PACKAGES", "").split(os.pathsep):
+        name, _, path = entry.partition("=")
+        if name == package_name:
+            return path
+    raise LookupError(f"package not found: {package_name}")
+'''
+
+
+def _xacro_env(ur_mirror: Path, rq_mirror: Path) -> dict[str, str]:
+    """Let pip-installed xacro resolve $(find pkg) without a ROS install."""
+    shim_pkg = BUILD_ROOT / "_ament_shim" / "ament_index_python"
+    shim_pkg.mkdir(parents=True, exist_ok=True)
+    (shim_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (shim_pkg / "packages.py").write_text(_AMENT_SHIM, encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (env.get("PYTHONPATH", ""), str(shim_pkg.parent)) if p
+    )
+    env["UR5_XACRO_PACKAGES"] = os.pathsep.join(
+        [
+            f"ur_description={ur_mirror}",
+            f"robotiq_2f_85_gripper_visualization={rq_mirror}",
+        ]
+    )
+    return env
+
+
 def _run_xacro(ur_type: str, ur_mirror: Path, rq_mirror: Path) -> str:
     src = _expand_find(XACRO.read_text(encoding="utf-8"))
     src = src.replace(str(UR_DESC), str(ur_mirror))
@@ -62,10 +95,17 @@ def _run_xacro(ur_type: str, ur_mirror: Path, rq_mirror: Path) -> str:
 
     cmd = ["xacro", str(tmp), f"ur_type:={ur_type}", "force_abs_paths:=true"]
     try:
-        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_xacro_env(ur_mirror, rq_mirror),
+        )
     except FileNotFoundError as e:
         raise SystemExit(
-            "xacro not found. Install ROS xacro or: sudo apt install ros-${ROS_DISTRO}-xacro"
+            "xacro not found. Install it with: pip install xacro "
+            "(or sudo apt install ros-${ROS_DISTRO}-xacro)"
         ) from e
     except subprocess.CalledProcessError as e:
         sys.stderr.write(e.stderr or "")
@@ -90,7 +130,7 @@ def _rewrite_package_uris(urdf_text: str) -> str:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Build flattened UR5 + Robotiq URDF")
-    p.add_argument("--ur-type", default="ur5", help="UR variant (ur5, ur5e, …)")
+    p.add_argument("--ur-type", default="ur5e", help="UR variant (ur5, ur5e, …)")
     p.add_argument("--skip-rewrite", action="store_true", help="Keep package:// URIs")
     args = p.parse_args()
 
